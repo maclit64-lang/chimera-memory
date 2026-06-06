@@ -39,6 +39,26 @@ chimera-memory session end --status PASSED
 chimera-memory receipt latest
 ```
 
+## Onboard an agent in 90 seconds
+
+Get the full session/wrap/repair-loop protocol for your agent:
+
+```bash
+chimera-memory agent-guide --agent generic   # or: kiro, codex
+```
+
+Generate a copy-paste session scaffold for your package:
+
+```bash
+chimera-memory template dogfood --scope-path packages/chimera-memory
+```
+
+Prompt templates for sustained use are in [`docs/prompts/`](../../docs/prompts/):
+
+- `kiro-dogfood.md` — Kiro agent session discipline
+- `generic-agent-dogfood.md` — Any agent
+- `release-closeout.md` — Release closeout checklist
+
 ## Health check
 
 ```bash

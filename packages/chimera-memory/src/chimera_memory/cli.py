@@ -754,6 +754,38 @@ def _build_parser() -> argparse.ArgumentParser:
     dq_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     dq_parser.set_defaults(command="dq-summary")
 
+    # ---- agent-guide subcommand ----
+    agent_guide_parser = subparsers.add_parser(
+        "agent-guide",
+        help="Print the session/wrap/repair-loop protocol for a named agent",
+    )
+    agent_guide_parser.add_argument(
+        "--agent",
+        dest="guide_agent",
+        default="generic",
+        choices=["generic", "kiro", "codex"],
+        help="Agent to tailor the guide for (default: generic)",
+    )
+    agent_guide_parser.set_defaults(command="agent-guide")
+
+    # ---- template subcommand ----
+    template_parser = subparsers.add_parser(
+        "template",
+        help="Generate copy-paste command templates",
+    )
+    template_sub = template_parser.add_subparsers(dest="template_command")
+    tmpl_dogfood = template_sub.add_parser(
+        "dogfood",
+        help="Generate a dogfood session template for a scope path",
+    )
+    tmpl_dogfood.add_argument(
+        "--scope-path",
+        dest="template_scope_path",
+        required=True,
+        help="Package/directory scope to target",
+    )
+    tmpl_dogfood.set_defaults(command="template")
+
     return parser
 
 
@@ -811,6 +843,10 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(parsed)
     if parsed.command == "dq-summary":
         return _dq_summary(parsed)
+    if parsed.command == "agent-guide":
+        return _agent_guide(parsed)
+    if parsed.command == "template":
+        return _template(parsed)
 
     if parsed.command in ("record", "settle"):
         print(
@@ -1379,6 +1415,28 @@ def _wrap_pytest(parsed: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
         return 2
+
+    # --- targeted warnings (non-fatal, stderr only) ---
+    import sys as _warn_sys
+    if not getattr(parsed, "scope_paths", None):
+        print(
+            "[chimera-memory] warning: --scope-path not set; "
+            "preflight intelligence will not anchor this claim.",
+            file=_warn_sys.stderr,
+        )
+    if not getattr(parsed, "failure_origin", None):
+        print(
+            "[chimera-memory] warning: failure_origin is missing or unknown; "
+            "DQ cohort outputs may exclude this claim.",
+            file=_warn_sys.stderr,
+        )
+    if getattr(parsed, "repair_phase", None) and not getattr(parsed, "repair_loop_id", None):
+        print(
+            "[chimera-memory] warning: --repair-phase set but --repair-loop-id is missing; "
+            "repair-loop lessons will not be generated.",
+            file=_warn_sys.stderr,
+        )
+
     claim_id = record_claim(
         title=f"{cmd_display} will pass",
         summary=f"Wrapped command is expected to exit 0: {cmd_display}",
@@ -1704,3 +1762,226 @@ def _receipt_show(parsed: argparse.Namespace) -> int:
         return 1
     receipt = build_receipt(session_dict, root=root)
     return _emit_receipt(receipt, parsed)
+
+
+_KNOWN_FAILURE_ORIGINS = (
+    "organic_real",
+    "controlled_real",
+    "invocation_artifact",
+    "test_first_contract",
+    "synthetic",
+)
+
+_REPAIR_PHASES = (
+    "baseline",
+    "repair_attempt",
+    "same_scope_after_fix",
+    "regression_check",
+    "none",
+)
+
+
+def _agent_guide(parsed: argparse.Namespace) -> int:
+    agent = getattr(parsed, "guide_agent", "generic")
+    harness_note = ""
+    if agent == "kiro":
+        harness_note = "\n  Kiro harness flag: --harness-id kiro-cli  (use --agent kiro)"
+    elif agent == "codex":
+        harness_note = "\n  Codex harness flag: --harness-id codex-cli  (use --agent codex)"
+
+    guide = f"""\
+CHIMERA MEMORY — AGENT PROTOCOL ({agent})
+══════════════════════════════════════════════════════════
+
+CLASSIFICATION RULES — failure_origin
+──────────────────────────────────────
+Use EXACTLY ONE of these values per wrap:
+
+  organic_real        Real failure encountered while doing actual work.
+                      USE THIS for genuine bugs, type errors, test failures
+                      you hit organically during a task.
+
+  controlled_real     Real failure in a controlled/fixture run.
+                      Use when you deliberately trigger a known-bad state.
+
+  invocation_artifact Flaky environment failure: network timeout, disk error,
+                      missing env var, CI resource contention.
+                      NOT the code's fault.
+
+  test_first_contract Tests written BEFORE the implementation (TDD red phase).
+                      NOT organic_real — expected to fail by design.
+
+  synthetic           Fabricated or scaffolded scenario.
+                      NOT organic_real — you made it up.
+
+RULE: never label test_first_contract or synthetic as organic_real.
+      Doing so corrupts M2B readiness and blocks the project.
+
+SESSION PROTOCOL — exact sequence
+──────────────────────────────────
+1. Run preflight first (advisory; always safe):
+
+     chimera-memory preflight --scope-path <your-scope>
+
+2. Start session:
+
+     chimera-memory session start \\
+       --branch <branch> \\
+       --task-label "<short description>" \\
+       --agent <agent> \\
+       --model <model>{harness_note}
+
+3. Wrap each verification command:
+
+     chimera-memory wrap \\
+       --failure-origin organic_real \\
+       --scope-path <your-scope> \\
+       --verification-scope package \\
+       -- <command>
+
+   --scope-path is REQUIRED for preflight intelligence to anchor the claim.
+   --failure-origin is REQUIRED for DQ cohort outputs.
+
+4. End session:
+
+     chimera-memory session end --status PASSED   # or FAILED
+
+5. Verify integrity:
+
+     chimera-memory verify
+
+6. Bundle receipt (always run this at end of task):
+
+     chimera-memory receipt bundle \\
+       --output-dir ./receipts \\
+       --include-preflight \\
+       --scope-path <your-scope>
+
+REPAIR-LOOP DISCIPLINE — for real bugs
+───────────────────────────────────────
+When you hit a real organic_real failure and fix it:
+
+Step 1 — baseline (first failing run):
+  chimera-memory wrap \\
+    --failure-origin organic_real \\
+    --scope-path <scope> \\
+    --repair-loop-id <stable-slug>  # e.g. fix-preflight-scope-2026-06 \\
+    --repair-phase baseline \\
+    -- <command>
+
+Step 2 — fix the code.
+
+Step 3 — same_scope_after_fix (rerun SAME command SAME scope after fix):
+  chimera-memory wrap \\
+    --failure-origin organic_real \\
+    --scope-path <scope> \\
+    --repair-loop-id <same-slug> \\
+    --repair-phase same_scope_after_fix \\
+    -- <same command>
+
+  → This produces repair_status: fixed_same_scope in preflight intelligence.
+
+Step 4 — regression_check (broader later validation, optional):
+  chimera-memory wrap \\
+    --failure-origin organic_real \\
+    --scope-path <scope> \\
+    --repair-loop-id <same-slug> \\
+    --repair-phase regression_check \\
+    -- <broader command>
+
+  → This produces repair_status: later_regression_validated.
+
+NOTE: regression_check does NOT produce fixed_same_scope.
+      Only same_scope_after_fix produces fixed_same_scope.
+
+M2B READINESS NOTE
+──────────────────
+M2B BLOCKED in a fresh ledger is EXPECTED. Do not reclassify tests or
+fabricate failures to unblock it. It unblocks when organic_real failures
+accumulate honestly (target: 5 organic_real_failed claims).
+"""
+    print(guide)
+    return 0
+
+
+def _template(parsed: argparse.Namespace) -> int:
+    sub = getattr(parsed, "template_command", None)
+    if sub != "dogfood":
+        print(
+            "template: specify a subcommand. Available: dogfood",
+            file=__import__("sys").stderr,
+        )
+        return 1
+    scope = parsed.template_scope_path
+
+    # Determine checks based on known scopes; fall back to placeholders
+    known_memory = scope.rstrip("/") in (
+        "packages/chimera-memory",
+        "./packages/chimera-memory",
+    )
+    known_types = scope.rstrip("/") in (
+        "packages/chimera-memory-types",
+        "./packages/chimera-memory-types",
+    )
+
+    if known_memory:
+        checks = [
+            f'pytest {scope}/tests -m "not slow" --tb=short -q',
+            f"mypy {scope}/src",
+            f"ruff check {scope}/src {scope}/tests",
+        ]
+    elif known_types:
+        checks = [
+            f"mypy {scope}/src",
+            f"ruff check {scope}/src",
+        ]
+    else:
+        checks = [
+            "# EDIT: replace with your test command, e.g. pytest <scope>/tests -q",
+            "# EDIT: replace with your type-check command, e.g. mypy <scope>/src",
+            "# EDIT: replace with your lint command, e.g. ruff check <scope>/src",
+        ]
+
+    wrap_lines = "\n\n".join(
+        f"chimera-memory wrap \\\n"
+        f"  --failure-origin organic_real \\\n"
+        f"  --scope-path {scope} \\\n"
+        f"  --verification-scope package \\\n"
+        f"  -- {cmd}"
+        for cmd in checks
+    )
+
+    template = f"""\
+# ── CHIMERA MEMORY DOGFOOD SESSION TEMPLATE ──────────────────────────
+# Scope: {scope}
+# Edit placeholders (<...>) before running.
+# ─────────────────────────────────────────────────────────────────────
+
+# 1. Preflight advisory (always run first)
+chimera-memory preflight --scope-path {scope}
+
+# 2. Start session
+chimera-memory session start \\
+  --branch <your-branch> \\
+  --task-label "<short description of this task>" \\
+  --agent <agent> \\
+  --model <model> \\
+  --harness-id <harness>
+
+# 3. Wrap verification commands
+{wrap_lines}
+
+# 4. End session
+chimera-memory session end --status PASSED
+
+# 5. Verify integrity
+chimera-memory verify
+
+# 6. Bundle receipt
+chimera-memory receipt bundle \\
+  --output-dir ./receipts \\
+  --include-preflight \\
+  --scope-path {scope}
+"""
+    print(template)
+    return 0
