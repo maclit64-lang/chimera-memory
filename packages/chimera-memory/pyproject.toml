@@ -1,6 +1,6 @@
 [project]
 name = "chimera-memory"
-version = "0.5.0"
+version = "0.6.0"
 description = "Local-first reliability ledger for AI coding-agent work"
 requires-python = ">=3.12"
 readme = "README.md"
