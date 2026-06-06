@@ -1,0 +1,1706 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from chimera_memory.adapters.git import capture_git_evidence
+from chimera_memory.adapters.pytest_ci import run_command, run_pytest
+from chimera_memory.data_quality import (
+    K_BASELINE_CLAIM_ID,
+    K_FAILURE_ORIGIN,
+    K_REPAIR_LOOP_ID,
+    K_REPAIR_OF_CLAIM_ID,
+    K_REPAIR_PHASE,
+    K_RESIDUAL_OUT_OF_SCOPE,
+    K_SCOPE_INTENT,
+    K_SCOPE_PATHS,
+    K_VERIFICATION_SCOPE,
+    validate_failure_origin,
+    validate_repair_phase,
+    validate_verification_scope,
+)
+from chimera_memory.drift import detect_drift
+from chimera_memory.ledger import build_dogfood_status, export_report, record_claim, settle_claim
+from chimera_memory.receipt import (
+    build_receipt,
+    format_receipt_json,
+    format_receipt_markdown,
+    format_receipt_text,
+)
+from chimera_memory.redaction import redact as _redact
+from chimera_memory.session import FinalStatus, Session
+from chimera_memory.session_lifecycle import end_session, start_session
+from chimera_memory.storage import MemoryStore
+from chimera_memory_types.finding import EvidenceRefType
+
+_GITIGNORE_ENTRY = ".chimera-memory/"
+
+
+def _ensure_gitignore(root: Path) -> None:
+    """Ensure .chimera-memory/ is in .gitignore. Idempotent."""
+    gitignore = root / ".gitignore"
+    if gitignore.exists():
+        text = gitignore.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for line in lines:
+            if line.strip() == _GITIGNORE_ENTRY.rstrip("/") or line.strip() == _GITIGNORE_ENTRY:
+                return  # already present
+        sep = "" if text.endswith("\n") else "\n"
+        gitignore.write_text(text + sep + _GITIGNORE_ENTRY + "\n", encoding="utf-8")
+        print(f"Added {_GITIGNORE_ENTRY} to .gitignore")
+    else:
+        gitignore.write_text(_GITIGNORE_ENTRY + "\n", encoding="utf-8")
+        print(f"Created .gitignore with {_GITIGNORE_ENTRY}")
+
+
+def _doctor(parsed: argparse.Namespace) -> int:
+    """Read-only health check for the local chimera-memory store."""
+    from chimera_memory.errata import effective_failure_origin, load_errata
+    from chimera_memory.integrity import verify_integrity
+
+    root = Path.cwd()
+    memory_dir = root / ".chimera-memory"
+    checks: list[dict[str, object]] = []
+    warnings: list[str] = []
+    critical: list[str] = []
+
+    # 1. Initialized?
+    initialized = memory_dir.exists()
+    msg = "initialized" if initialized else "not initialized — run: chimera-memory init"
+    checks.append({"name": "initialized", "ok": initialized, "message": msg})
+    if not initialized:
+        critical.append("not initialized")
+
+    # 2. .gitignore entry
+    gitignore = root / ".gitignore"
+    gitignore_ok = False
+    if gitignore.exists():
+        text = gitignore.read_text(encoding="utf-8")
+        gitignore_ok = any(
+            ln.strip() in (_GITIGNORE_ENTRY, _GITIGNORE_ENTRY.rstrip("/"))
+            for ln in text.splitlines()
+        )
+    checks.append({"name": "gitignore", "ok": gitignore_ok,
+                   "message": ".gitignore contains .chimera-memory/" if gitignore_ok
+                   else ".chimera-memory/ not in .gitignore — run: chimera-memory init"})
+    if not gitignore_ok:
+        warnings.append(".chimera-memory/ not in .gitignore")
+
+    # 3. Active session
+    active_session = None
+    if initialized:
+        try:
+            store = MemoryStore.from_paths(root=root)
+            active_session = store.current_session()
+        except Exception:
+            pass
+    has_session = active_session is not None
+    checks.append({"name": "active_session", "ok": has_session,
+                   "message": f"active session: {(active_session or {}).get('session_id', '')}"
+                   if has_session else "no active session"})
+    if not has_session:
+        warnings.append("no active session")
+
+    # 4. Claims count
+    unique_claims = 0
+    settled_claims = 0
+    if initialized:
+        try:
+            status = build_dogfood_status(root=root)
+            unique_claims = status.get("unique_claims", 0)
+            settled_claims = status.get("settled_unique_claims", 0)
+        except Exception:
+            pass
+    checks.append({"name": "claims", "ok": True,
+                   "message": f"{settled_claims} settled claims ({unique_claims} unique)"})
+
+    # 5. Integrity
+    integrity_status = "UNKNOWN"
+    broken = 0
+    if initialized:
+        try:
+            report = verify_integrity(memory_dir)
+            integrity_status = report.status
+            broken = report.broken_records
+        except Exception:
+            integrity_status = "ERROR"
+    integrity_ok = integrity_status in ("OK", "LEGACY_UNSIGNED") and broken == 0
+    checks.append({"name": "integrity", "ok": integrity_ok,
+                   "message": f"integrity: {integrity_status}, broken: {broken}"})
+    if not integrity_ok:
+        critical.append(f"integrity {integrity_status}, broken: {broken}")
+
+    # 6. M2B readiness + blockers
+    m2b_level = "unknown"
+    m2b_blockers: list[str] = []
+    if initialized:
+        try:
+            from chimera_memory.m2b_readiness import compute_m2b_readiness
+            store3 = MemoryStore.from_paths(root=root)
+            rpt = compute_m2b_readiness(store3)
+            m2b_level = rpt.readiness_level
+            m2b_blockers = list(rpt.blockers)
+        except Exception:
+            try:
+                st = build_dogfood_status(root=root) or {}
+                m2b_level = st.get("m2b_readiness_level", "unknown")
+            except Exception:
+                pass
+    checks.append({"name": "m2b_readiness", "ok": True,
+                   "message": f"M2B readiness: {m2b_level}",
+                   "blockers": m2b_blockers})
+
+    # 7–8. Failure counts by origin — uses settled claim read model (errata-aware)
+    failure_counts: dict[str, int] = {}
+    if initialized:
+        try:
+            from chimera_memory.query import build_claim_read_model
+            store2 = MemoryStore.from_paths(root=root)
+            errata = load_errata(store2.memory_dir)
+            rm = build_claim_read_model(store2)
+            for claim in rm.failures:
+                fo = effective_failure_origin(claim, errata)
+                if fo:
+                    failure_counts[fo] = failure_counts.get(fo, 0) + 1
+        except Exception:
+            pass
+    organic_failed = failure_counts.get("organic_real", 0)
+    checks.append({"name": "organic_failures", "ok": True,
+                   "message": f"organic_real failures: {organic_failed}"})
+
+    # Overall status
+    if critical:
+        overall = "critical"
+        exit_code = 2
+    elif warnings:
+        overall = "warnings"
+        exit_code = 1
+    else:
+        overall = "healthy"
+        exit_code = 0
+
+    # Next step suggestion
+    next_steps: list[str] = []
+    if not initialized:
+        next_steps.append("chimera-memory init")
+    if not has_session and initialized:
+        next_steps.append(
+            "chimera-memory session start --branch <branch> --task-label <label>"
+            " --agent <agent> --model <model> --harness-id <id>"
+        )
+    if not gitignore_ok and initialized:
+        next_steps.append("chimera-memory init  # adds .chimera-memory/ to .gitignore")
+
+    use_json = getattr(parsed, "json", False)
+    if use_json:
+        payload = {
+            "schema_version": "1",
+            "overall_status": overall,
+            "exit_code": exit_code,
+            "checks": checks,
+            "counts": {
+                "unique_claims": unique_claims,
+                "settled_claims": settled_claims,
+                "organic_real_failures": organic_failed,
+                "failure_by_origin": failure_counts,
+                "m2b_readiness_level": m2b_level,
+                "m2b_blockers": m2b_blockers,
+            },
+            "warnings": warnings,
+            "critical": critical,
+            "next_steps": next_steps,
+        }
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print("Chimera Memory Doctor")
+        print(f"Status: {overall}\n")
+        print("Checks:")
+        for c in checks:
+            is_crit = any(str(c["name"]) in str(x) for x in critical)
+            sym = "✓" if c["ok"] else ("✗" if is_crit else "⚠")
+            print(f"  {sym} {c['message']}")
+            if c["name"] == "m2b_readiness" and m2b_blockers:
+                for b in m2b_blockers:
+                    print(f"    ↳ {b}")
+        print()
+        print("Not built: M2B scoring · model routing · hosted/cloud sync · write-import")
+        if next_steps:
+            print("\nNext steps:")
+            for ns in next_steps:
+                print(f"  {ns}")
+
+    return exit_code
+
+
+def _dq_summary(parsed: argparse.Namespace) -> int:
+    """Read-only DQ classification summary."""
+    from chimera_memory.data_quality import K_FAILURE_ORIGIN, K_REPAIR_PHASE, K_VERIFICATION_SCOPE
+    from chimera_memory.errata import effective_failure_origin, load_errata
+    from chimera_memory.query import build_claim_read_model
+
+    root = Path.cwd()
+    store = MemoryStore.from_paths(root=root)
+    errata_map = load_errata(store.memory_dir)
+    rm = build_claim_read_model(store)
+
+    all_claims = rm.clean_claims + rm.failures
+    failure_origin_raw: dict[str, int] = {}
+    failure_origin_eff: dict[str, int] = {}
+    verification_scope: dict[str, int] = {}
+    repair_phase: dict[str, int] = {}
+
+    for c in all_claims:
+        m = c.metadata or {}
+        fo_raw = m.get(K_FAILURE_ORIGIN) or "unknown"
+        failure_origin_raw[fo_raw] = failure_origin_raw.get(fo_raw, 0) + 1
+        fo_eff = effective_failure_origin(c, errata_map) or "unknown"
+        failure_origin_eff[fo_eff] = failure_origin_eff.get(fo_eff, 0) + 1
+        vs = m.get(K_VERIFICATION_SCOPE) or "unknown"
+        verification_scope[vs] = verification_scope.get(vs, 0) + 1
+        rp = m.get(K_REPAIR_PHASE) or "none"
+        repair_phase[rp] = repair_phase.get(rp, 0) + 1
+
+    # Legacy unlabeled = claims with no failure_origin in raw metadata
+    legacy_count = failure_origin_raw.get("unknown", 0)
+
+    payload = {
+        "schema_version": "1",
+        "total_claims": len(all_claims),
+        "errata_applied_count": len(errata_map),
+        "legacy_unlabeled_claims": legacy_count,
+        "legacy_exclusion_reason": (
+            "Legacy claims predate DQ metadata and are not backfilled automatically. "
+            "They are excluded from DQ-cohort readiness gates."
+        ),
+        "failure_origin_raw": dict(sorted(failure_origin_raw.items())),
+        "failure_origin_effective": dict(sorted(failure_origin_eff.items())),
+        "verification_scope": dict(sorted(verification_scope.items())),
+        "repair_phase": dict(sorted(repair_phase.items())),
+    }
+
+    use_json = getattr(parsed, "json", False)
+    if use_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print("Chimera Memory DQ Summary\n")
+        print(f"Total claims:          {payload['total_claims']}")
+        print(f"Legacy unlabeled:      {legacy_count}")
+        print(f"Errata applied:        {payload['errata_applied_count']}\n")
+        print("Failure origin (effective, errata-applied):")
+        for k, v in sorted(failure_origin_eff.items(), key=lambda x: -x[1]):
+            print(f"  {k}: {v}")
+        print("\nVerification scope:")
+        for k, v in sorted(verification_scope.items(), key=lambda x: -x[1]):
+            print(f"  {k}: {v}")
+        print("\nRepair phase:")
+        for k, v in sorted(repair_phase.items(), key=lambda x: -x[1]):
+            print(f"  {k}: {v}")
+        print(
+            "\nNote: Legacy claims are excluded from DQ-cohort readiness gates."
+            "\n      They are not backfilled automatically."
+        )
+    return 0
+
+
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version as _version
+        return _version("chimera-memory")
+    except Exception:
+        return "unknown"
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="chimera-memory",
+        description=(
+            "Chimera Memory — local-first reliability ledger for AI coding-agent work.\n\n"
+            "Records what an agent tried, which command checked it, what happened,\n"
+            "and what receipt proves it. All data stays on your machine."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"chimera-memory {_get_version()}"
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    init_parser = subparsers.add_parser("init", help="Initialise a local .chimera-memory/ store")
+    init_parser.set_defaults(command="init")
+
+    for command in ("record", "settle"):
+        p = subparsers.add_parser(command, help=argparse.SUPPRESS)
+        p.set_defaults(command=command)
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Show raw reliability groups (all claims including pre-attribution records).",
+        description=(
+            "Prints raw reliability groups by agent/model/task_type.\n"
+            "Includes all settled claims, including pre-attribution records.\n"
+            "For dogfood gate progress and clean-claim counts, use: chimera-memory status"
+        ),
+    )
+    report_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    report_parser.set_defaults(command="report")
+
+    drift_parser = subparsers.add_parser("drift", help="Show reliability drift advisory")
+    drift_parser.add_argument("--by", default="model_version", help="Group by field")
+    drift_parser.add_argument("--min-claims", type=int, default=30, help="Min claims for advisory")
+    drift_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    drift_parser.set_defaults(command="drift")
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show dogfood gate progress and clean-claim counts.",        description=(
+            "Applies D0 clean-claim counting rules to show gate progress.\n"
+            "Distinguishes raw store records from unique clean settled claims.\n"
+            "Use this (not report) to check whether the M2 comparison gate is met.\n\n"
+            "A claim is clean if it has: session_id, agent_id (not unknown-agent),\n"
+            "model_version (may be 'unknown'), task_type, attribution_confidence,\n"
+            "and identity_source."
+        ),
+    )
+    status_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    status_parser.set_defaults(command="status")
+
+    failures_parser = subparsers.add_parser(
+        "failures",
+        help="List CONTRADICTED claims with failure witnesses.",
+        description=(
+            "Shows only claims whose outcome was CONTRADICTED (exit code nonzero).\n"
+            "VALIDATED claims are excluded.\n"
+            "Each failure includes the command, exit code, agent, model, task_type,\n"
+            "and any captured stdout/stderr excerpt."
+        ),
+    )
+    failures_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    failures_parser.add_argument(
+        "--failure-origin", dest="filter_failure_origin",
+        help="Filter by failure_origin (e.g. organic_real, synthetic).",
+    )
+    failures_parser.add_argument(
+        "--verification-scope", dest="filter_verification_scope",
+        help="Filter by verification_scope (e.g. package, full_suite).",
+    )
+    failures_parser.add_argument(
+        "--repair-loop-id", dest="filter_repair_loop_id",
+        help="Filter by repair_loop_id.",
+    )
+    failures_parser.add_argument(
+        "--repair-phase", dest="filter_repair_phase",
+        help="Filter by repair_phase.",
+    )
+    failures_parser.set_defaults(command="failures")
+
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="Verify the local integrity chain for claim records.",        description=(
+            "Checks the integrity chain in .chimera-memory/integrity.jsonl.\n"
+            "Legacy records without chain entries are reported as LEGACY_UNSIGNED\n"
+            "and are not treated as corruption — they predate this feature.\n"
+            "New records covered by the chain are fully verified."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    verify_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    verify_parser.set_defaults(command="verify")
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Export settled evidence events as engine-ready JSONL.",
+        description=(
+            "Converts settled Chimera Memory claims into neutral JSONL evidence events.\n"
+            "No network calls. Does not mutate the store.\n\n"
+            "Outputs one JSON object per line to stdout or to --output file."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    export_parser.add_argument(
+        "--output", metavar="PATH",
+        help="Write JSONL to this file path instead of stdout",
+    )
+    export_parser.add_argument(
+        "--failures-only", action="store_true",
+        help="Export only CONTRADICTED (failed) claims",
+    )
+    export_parser.add_argument(
+        "--clean-only", action="store_true",
+        help="Export only fully attributed clean claims (D0 rules) — engine-safe",
+    )
+    export_parser.add_argument(
+        "--session-id", metavar="SESSION_ID",
+        help="Export only claims linked to this session",
+    )
+    export_parser.set_defaults(command="export")
+
+    reliability_parser = subparsers.add_parser(
+        "reliability",
+        help=(
+            "Show read-only raw ledger reliability summary by agent/model/task. "
+            "Reports validation rates from settled clean claims. "
+            "Does not rank models, route work, or make autonomy decisions."
+        ),
+    )
+    reliability_parser.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON summary",
+    )
+    reliability_parser.add_argument(
+        "--failure-origin", dest="rel_failure_origin",
+        help="Filter by failure_origin (e.g. organic_real)",
+    )
+    reliability_parser.add_argument(
+        "--verification-scope", dest="rel_verification_scope",
+        help="Filter by verification_scope (e.g. package)",
+    )
+    reliability_parser.add_argument(
+        "--repair-phase", dest="rel_repair_phase",
+        help="Filter by repair_phase",
+    )
+    reliability_parser.add_argument(
+        "--repair-loop-id", dest="rel_repair_loop_id",
+        help="Filter by repair_loop_id",
+    )
+    reliability_parser.add_argument(
+        "--organic-only", dest="rel_organic_only", action="store_true",
+        help="Shorthand for --failure-origin organic_real",
+    )
+    reliability_parser.set_defaults(command="reliability")
+
+    wrap_parser = subparsers.add_parser(
+        "wrap",
+        help="Run a command and record its VALIDATED/CONTRADICTED outcome as a claim.",
+        description=(
+            "Wraps a verification command and records the result as a sealed claim.\n\n"
+            "Exit code 0  → VALIDATED\n"
+            "Exit code >0 → CONTRADICTED (failure witness captured)\n\n"
+            "Session metadata (agent, model, harness, attribution) is inherited\n"
+            "from the active session unless explicitly overridden via flags.\n\n"
+            "For generic (non-pytest) commands, use -- before the command:\n"
+            "  chimera-memory wrap --task-type lint -- uv run ruff check .\n"
+            "  chimera-memory wrap --task-type type -- uv run mypy src/\n\n"
+            "For pytest commands, -- is not required:\n"
+            "  chimera-memory wrap --task-type test pytest tests/ -q"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    wrap_parser.add_argument(
+        "--agent", dest="agent_id",
+        help="Override agent label (e.g. kiro, claude-code). Inherits from session.",
+    )
+    wrap_parser.add_argument(
+        "--model", dest="model_version",
+        help="Model override. Use 'unknown' if genuinely unknown. Inherits from session.",
+    )
+    wrap_parser.add_argument(
+        "--task-type", dest="task_type",
+        help="Work label: test, lint, type, docs, implementation, refactor, bugfix, review, …",
+    )
+    wrap_parser.add_argument("--confidence", type=float, help="Override claim confidence (0.0–1.0)")
+    # --- data-quality metadata flags (all optional) ---
+    wrap_parser.add_argument(
+        "--failure-origin", dest="failure_origin",
+        help="Why this may fail: organic_real, synthetic, invocation_artifact, …",
+    )
+    wrap_parser.add_argument(
+        "--verification-scope", dest="verification_scope",
+        help="Scope: focused_file, package, workspace, full_suite, …",
+    )
+    wrap_parser.add_argument(
+        "--scope-path", dest="scope_paths", action="append", metavar="PATH",
+        help="Path(s) covered (repeatable).",
+    )
+    wrap_parser.add_argument("--scope-intent", dest="scope_intent",
+                             help="Free-text description of what is being verified.")
+    wrap_parser.add_argument("--repair-loop-id", dest="repair_loop_id",
+                             help="Stable ID linking baseline→fix→verify claims.")
+    wrap_parser.add_argument(
+        "--repair-phase", dest="repair_phase",
+        help="Phase: baseline, repair_attempt, same_scope_after_fix, regression_check, none",
+    )
+    wrap_parser.add_argument("--repair-of-claim-id", dest="repair_of_claim_id",
+                             help="claim_id of the failing claim this repairs.")
+    wrap_parser.add_argument("--baseline-claim-id", dest="baseline_claim_id",
+                             help="claim_id of the baseline claim for this repair loop.")
+    wrap_parser.add_argument("--residual-out-of-scope", dest="residual_out_of_scope",
+                             help="Note any known failures outside the verified scope.")
+    wrap_parser.add_argument(
+        "wrapped", nargs=argparse.REMAINDER, help="Command (use -- to separate)",
+    )
+    wrap_parser.set_defaults(command="wrap")
+
+    # ---- session subcommand ----
+    session_parser = subparsers.add_parser("session", help="Manage work sessions")
+    session_sub = session_parser.add_subparsers(dest="session_command")
+
+    session_start = session_sub.add_parser(
+        "start",
+        help="Open a new session with attribution metadata.",
+        description=(
+            "Opens a new session. Wrapped claims inherit agent/model/harness from this session.\n\n"
+            "Use --model unknown if the model is genuinely unknown (e.g. a planning chat).\n"
+            "Do not invent a model name."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    session_start.add_argument("--branch", required=True, help="Git branch being worked on")
+    session_start.add_argument("--task-label", required=True, help="Short description of work")
+    session_start.add_argument(
+        "--agent",
+        help="Agent label (e.g. kiro, claude-code). Use a stable lowercase label.",
+    )
+    session_start.add_argument(
+        "--model",
+        help="Model version (e.g. claude-sonnet-4.6, gpt-4o). Use 'unknown' if genuinely unknown.",
+    )
+    session_start.add_argument(
+        "--harness-id",
+        help="Tool surface (e.g. kiro-cli, claude-code-cli, planning-chat, manual-terminal).",
+    )
+    session_start.add_argument("--memory-dir", help="Override .chimera-memory/ directory path")
+    session_start.set_defaults(command="session", session_command="start")
+
+    session_end = session_sub.add_parser(
+        "end",
+        help="Close the active session and emit a receipt.",
+        description="Closes the open session and emits a text or JSON receipt.",
+    )
+    session_end.add_argument(
+        "--final-status",
+        type=lambda s: s.upper(),
+        choices=["PASSED", "FAILED", "MIXED", "INTERRUPTED", "UNKNOWN"],
+        help="Final outcome: PASSED, FAILED, MIXED, INTERRUPTED, or UNKNOWN. Alias: --status",
+    )
+    session_end.add_argument(
+        "--status",
+        type=lambda s: s.upper(),
+        choices=["PASSED", "FAILED", "MIXED", "INTERRUPTED", "UNKNOWN"],
+        help="Alias for --final-status",
+    )
+    session_end.add_argument("--memory-dir", help="Override .chimera-memory/ directory path")
+    session_end.add_argument("--json", action="store_true", help="Emit receipt as JSON")
+    session_end.set_defaults(command="session", session_command="end")
+
+    session_list = session_sub.add_parser("list", help="List closed sessions")
+    session_list.add_argument("--memory-dir")
+    session_list.set_defaults(command="session", session_command="list")
+
+    session_current = session_sub.add_parser("current", help="Show the currently open session")
+    session_current.add_argument("--memory-dir")
+    session_current.set_defaults(command="session", session_command="current")
+
+    # ---- receipt subcommand ----
+    receipt_parser = subparsers.add_parser(
+        "receipt",
+        help="Show a session receipt in text, JSON, or markdown.",
+        description=(
+            "Displays a session receipt showing agent, git state, commands observed,\n"
+            "outcome, and drift signal.\n\n"
+            "--markdown produces a GitHub-renderable receipt suitable for PR comments."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    receipt_sub = receipt_parser.add_subparsers(dest="receipt_command")
+
+    receipt_show = receipt_sub.add_parser("show", help="Show receipt for a specific session ID")
+    receipt_show.add_argument("session_id", help="Session ID to show receipt for")
+    receipt_show.add_argument("--memory-dir")
+    receipt_show.add_argument("--json", action="store_true", help="Emit as JSON")
+    receipt_show.add_argument("--markdown", action="store_true", help="Emit as GitHub markdown")
+    receipt_show.add_argument("--format", dest="receipt_format",
+                              choices=["text", "json", "markdown", "github-summary"],
+                              help="Output format")
+    receipt_show.add_argument("--output", dest="receipt_output", metavar="PATH",
+                              help="Write receipt to file instead of stdout")
+    receipt_show.set_defaults(command="receipt")
+
+    receipt_latest = receipt_sub.add_parser("latest", help="Show receipt for most recent session")
+    receipt_latest.add_argument("--memory-dir")
+    receipt_latest.add_argument("--json", action="store_true", help="Emit as JSON")
+    receipt_latest.add_argument("--markdown", action="store_true", help="Emit as GitHub markdown")
+    receipt_latest.add_argument("--format", dest="receipt_format",
+                                choices=["text", "json", "markdown", "github-summary"],
+                                help="Output format")
+    receipt_latest.add_argument("--output", dest="receipt_output", metavar="PATH",
+                                help="Write receipt to file instead of stdout")
+    receipt_latest.set_defaults(command="receipt")
+
+    receipt_bundle = receipt_sub.add_parser(
+        "bundle",
+        help="Write a receipt artifact bundle (receipt.md, receipt.json,"
+        " status.json) to a directory.",
+    )
+    receipt_bundle.add_argument("--output-dir", dest="bundle_output_dir", required=True,
+                                metavar="DIR", help="Directory to write bundle files into")
+    receipt_bundle.add_argument("--memory-dir")
+    receipt_bundle.add_argument(
+        "--include-preflight", dest="bundle_include_preflight", action="store_true",
+        help="Include preflight advisory files (preflight.md, preflight.json).",
+    )
+    receipt_bundle.add_argument(
+        "--from-git", dest="bundle_from_git", action="store_true",
+        help="Infer preflight scope from git working-tree changes.",
+    )
+    receipt_bundle.add_argument(
+        "--scope-path", dest="bundle_scope_paths", action="append", metavar="PATH",
+        help="Explicit scope paths for preflight (repeatable).",
+    )
+    receipt_bundle.set_defaults(command="receipt")
+
+    repair_loops_parser = subparsers.add_parser(
+        "repair-loops",
+        help="Show repair loop claim groups (explicit metadata only, no inference).",
+    )
+    repair_loops_parser.add_argument("--json", action="store_true")
+    repair_loops_parser.set_defaults(command="repair-loops")
+
+    errata_parser = subparsers.add_parser(
+        "errata",
+        help="Record a correction to a claim's failure_origin without mutating history.",
+    )
+    errata_sub = errata_parser.add_subparsers(dest="errata_command")
+    errata_add = errata_sub.add_parser(
+        "add",
+        help="Correct a claim's failure_origin for DQ readiness calculations.",
+    )
+    errata_add.add_argument("claim_id", help="Claim ID to correct")
+    errata_add.add_argument(
+        "--failure-origin", dest="corrected_failure_origin", required=True,
+        help="Corrected failure_origin value",
+    )
+    errata_add.add_argument("--reason", required=True, help="Why this correction is needed")
+    errata_add.add_argument("--note", default="", help="Optional additional note")
+    errata_add.set_defaults(command="errata")
+
+    errata_list = errata_sub.add_parser("list", help="List all errata records.")
+    errata_list.add_argument("--json", action="store_true")
+    errata_list.set_defaults(command="errata")
+
+    evidence_parser = subparsers.add_parser(
+        "evidence",
+        help="Evidence bundle export and dry-run import for cross-agent exchange.",
+    )
+    evidence_sub = evidence_parser.add_subparsers(dest="evidence_command")
+
+    ev_bundle = evidence_sub.add_parser(
+        "bundle",
+        help="Export clean evidence as a portable bundle.",
+    )
+    ev_bundle.add_argument("--output-dir", dest="ev_output_dir", required=True, metavar="DIR")
+    ev_bundle.add_argument("--memory-dir")
+    ev_bundle.set_defaults(command="evidence")
+
+    ev_import = evidence_sub.add_parser(
+        "import",
+        help="Inspect an evidence bundle (dry-run only — no writes).",
+    )
+    ev_import.add_argument("bundle_dir", metavar="BUNDLE_DIR")
+    ev_import.add_argument("--dry-run", dest="ev_dry_run", action="store_true", default=True,
+                           help="Dry-run (no writes). This is always true in this version.")
+    ev_import.add_argument("--json", action="store_true")
+    ev_import.add_argument("--memory-dir")
+    ev_import.set_defaults(command="evidence")
+
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Read-only advisory: relevant failures, repair loops, recommended checks.",
+    )
+    preflight_parser.add_argument(
+        "--scope-path", dest="preflight_scopes", action="append", metavar="PATH",
+        help="Scope path to filter evidence (repeatable).",
+    )
+    preflight_parser.add_argument(
+        "--from-git", dest="preflight_from_git", action="store_true",
+        help="Infer scope from git working-tree changes (staged + unstaged tracked files).",
+    )
+    preflight_parser.add_argument(
+        "--include-untracked", dest="preflight_include_untracked", action="store_true",
+        help="Include untracked (??) files when using --from-git.",
+    )
+    preflight_parser.add_argument("--task-type", dest="preflight_task_type")
+    preflight_parser.add_argument("--agent", dest="preflight_agent")
+    preflight_parser.add_argument("--model", dest="preflight_model")
+    preflight_parser.add_argument("--failure-origin", dest="preflight_failure_origin")
+    preflight_parser.add_argument("--verification-scope", dest="preflight_vs")
+    preflight_parser.add_argument("--limit", dest="preflight_limit", type=int, default=10)
+    preflight_parser.add_argument("--json", action="store_true")
+    preflight_parser.set_defaults(command="preflight")
+
+    m2b_parser = subparsers.add_parser(
+        "m2b-readiness",
+        help="Read-only M2B evidence readiness gate (not drift scoring).",
+    )
+    m2b_parser.add_argument("--json", action="store_true")
+    m2b_parser.add_argument(
+        "--dq-only", dest="m2b_dq_only", action="store_true",
+        help="Evaluate only DQ-labeled claims (excludes legacy unknowns).",
+    )
+    m2b_parser.add_argument(
+        "--all-ledger", dest="m2b_all_ledger", action="store_true",
+        help="Evaluate all clean claims including legacy unlabeled.",
+    )
+    m2b_parser.set_defaults(command="m2b-readiness")
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check local chimera-memory health")
+    doctor_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    doctor_parser.set_defaults(command="doctor")
+
+    dq_parser = subparsers.add_parser("dq-summary", help="Read-only DQ classification summary")
+    dq_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    dq_parser.set_defaults(command="dq-summary")
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    try:
+        parsed = parser.parse_args(argv)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 1
+
+    if parsed.command is None:
+        parser.print_help()
+        return 0
+    if parsed.command == "init":
+        store = MemoryStore.from_paths()
+        store.initialize()
+        print(store.memory_dir)
+        _ensure_gitignore(Path.cwd())
+        return 0
+    if parsed.command == "wrap":
+        return _wrap_pytest(parsed)
+    if parsed.command == "status":
+        return _status(parsed)
+    if parsed.command == "failures":
+        return _failures(parsed)
+    if parsed.command == "verify":
+        return _verify(parsed)
+    if parsed.command == "export":
+        return _export(parsed)
+    if parsed.command == "reliability":
+        return _reliability(parsed)
+    if parsed.command == "report":
+        report = export_report()
+        print(json.dumps(report, sort_keys=True) if parsed.json else _plain_report(report))
+        return 0
+    if parsed.command == "drift":
+        result = detect_drift(by=parsed.by, min_claims=parsed.min_claims)
+        print(json.dumps(result, sort_keys=True) if parsed.json else _plain_drift(result))
+        return 0
+    if parsed.command == "session":
+        return _handle_session(parsed)
+    if parsed.command == "receipt":
+        return _handle_receipt(parsed)
+    if parsed.command == "repair-loops":
+        return _repair_loops(parsed)
+    if parsed.command == "errata":
+        return _errata(parsed)
+    if parsed.command == "evidence":
+        return _evidence(parsed)
+    if parsed.command == "preflight":
+        return _preflight(parsed)
+    if parsed.command == "m2b-readiness":
+        return _m2b_readiness(parsed)
+    if parsed.command == "doctor":
+        return _doctor(parsed)
+    if parsed.command == "dq-summary":
+        return _dq_summary(parsed)
+
+    if parsed.command in ("record", "settle"):
+        print(
+            f"'{parsed.command}' is an internal subcommand not part of the public API. "
+            "Use 'chimera-memory wrap' to record verification outcomes.",
+            file=__import__("sys").stderr,
+        )
+        return 2
+
+    print(f"{parsed.command}: not implemented yet")
+    return 2
+
+
+def _evidence(parsed: argparse.Namespace) -> int:
+    """Handle evidence bundle / evidence import subcommands."""
+    from chimera_memory.evidence import (
+        build_evidence_bundle,
+        dry_run_import,
+        format_dry_run_text,
+    )
+
+    sub = getattr(parsed, "evidence_command", None)
+    root = _memory_root(parsed)
+    store = MemoryStore.from_paths(root=root)
+
+    if sub == "bundle":
+        out_dir = Path(parsed.ev_output_dir)
+        build_evidence_bundle(store, out_dir)
+        return 0
+
+    if sub == "import":
+        bundle_dir = Path(parsed.bundle_dir)
+        if not bundle_dir.exists():
+            print(f"error: bundle directory '{bundle_dir}' not found",
+                  file=__import__("sys").stderr)
+            return 1
+        result = dry_run_import(store, bundle_dir)
+        if parsed.json:
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(format_dry_run_text(result))
+        return 0 if not result.get("errors") else 1
+
+    print(f"evidence: unknown subcommand '{sub}'", file=__import__("sys").stderr)
+    return 2
+
+
+def _preflight(parsed: argparse.Namespace) -> int:
+    from chimera_memory.data_quality import (
+        validate_failure_origin,
+        validate_verification_scope,
+    )
+    from chimera_memory.preflight import build_preflight, format_preflight_text
+
+    # Validate enum filters
+    fo = getattr(parsed, "preflight_failure_origin", None)
+    vs = getattr(parsed, "preflight_vs", None)
+    try:
+        if fo:
+            validate_failure_origin(fo)
+        if vs:
+            validate_verification_scope(vs)
+    except ValueError as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+
+    store = MemoryStore.from_paths(root=Path.cwd())
+    report = build_preflight(
+        store,
+        scope_paths=getattr(parsed, "preflight_scopes", None) or [],
+        from_git=getattr(parsed, "preflight_from_git", False),
+        include_untracked=getattr(parsed, "preflight_include_untracked", False),
+        task_type=getattr(parsed, "preflight_task_type", None),
+        agent_id=getattr(parsed, "preflight_agent", None),
+        model_version=getattr(parsed, "preflight_model", None),
+        failure_origin=fo,
+        verification_scope=vs,
+        limit=getattr(parsed, "preflight_limit", 10),
+    )
+    if parsed.json:
+        print(json.dumps(report.to_dict(), sort_keys=True))
+    else:
+        print(format_preflight_text(report))
+    return 0
+
+
+def _errata(parsed: argparse.Namespace) -> int:
+    """Handle errata add/list subcommands."""
+    from chimera_memory.errata import add_errata, load_errata
+
+    sub = getattr(parsed, "errata_command", None)
+    mem_dir = MemoryStore.from_paths(root=Path.cwd()).memory_dir
+
+    if sub == "add":
+        # Resolve short claim_id prefix to full UUID if needed
+        claim_id = parsed.claim_id
+        if len(claim_id) < 32:
+            store = MemoryStore.from_paths(root=Path.cwd())
+            # Use unique claim_ids (deduped)
+            seen: set[str] = set()
+            matches: list[str] = []
+            for c in store.read_claims():
+                if c.claim_id not in seen and c.claim_id.startswith(claim_id):
+                    seen.add(c.claim_id)
+                    matches.append(c.claim_id)
+            if len(matches) == 1:
+                claim_id = matches[0]
+            elif len(matches) == 0:
+                print(f"error: no claim found with prefix '{claim_id}'",
+                      file=__import__("sys").stderr)
+                return 1
+            else:
+                print(f"error: ambiguous prefix '{claim_id}' matches {len(matches)} claims",
+                      file=__import__("sys").stderr)
+                return 1
+        add_errata(
+            mem_dir,
+            claim_id=claim_id,
+            corrected_failure_origin=parsed.corrected_failure_origin,
+            reason=parsed.reason,
+            note=getattr(parsed, "note", ""),
+        )
+        print(
+            f"Errata recorded: claim {claim_id[:8]} "
+            f"→ failure_origin={parsed.corrected_failure_origin}"
+        )
+        print("Note: original claim record is unchanged; errata applies to DQ readiness only.")
+        return 0
+
+    if sub == "list":
+        errata = load_errata(mem_dir)
+        if parsed.json:
+            print(json.dumps(list(errata.values()), sort_keys=True))
+        else:
+            if not errata:
+                print("No errata records.")
+            else:
+                print(f"{len(errata)} errata record(s):")
+                for rec in errata.values():
+                    cid = rec['claim_id'][:8]
+                    fo = rec['corrected_failure_origin']
+                    reason = rec['reason']
+                    print(f"  {cid} → {fo}: {reason}")
+        return 0
+
+    print(f"errata: unknown subcommand '{sub}'", file=__import__("sys").stderr)
+    return 2
+
+
+def _repair_loops(parsed: argparse.Namespace) -> int:
+    """Group clean claims by repair_loop_id. Explicit metadata only, no inference."""
+    from chimera_memory.query import build_claim_read_model
+    from chimera_memory_types.knowledge import ClaimStatus
+
+    store = MemoryStore.from_paths(root=Path.cwd())
+    rm = build_claim_read_model(store)
+
+    loops: dict[str, list[Any]] = {}
+    for c in rm.clean_claims:
+        m = c.metadata or {}
+        rl = m.get("repair_loop_id")
+        if rl:
+            loops.setdefault(str(rl), []).append(c)
+
+    if not loops:
+        if parsed.json:
+            print(json.dumps({"repair_loops": [], "count": 0}, sort_keys=True))
+        else:
+            print(
+            "No repair loops found.\n"
+            "Tag claims with --repair-loop-id and --repair-phase when running:\n"
+            "  chimera-memory wrap --repair-loop-id my-fix --repair-phase baseline -- pytest ..."
+        )
+        return 0
+
+    result = []
+    for loop_id, claims in sorted(loops.items()):
+        phases: dict[str, int] = {}
+        validated = contradicted = 0
+        for c in claims:
+            m = c.metadata or {}
+            ph = str(m.get("repair_phase") or "none")
+            phases[ph] = phases.get(ph, 0) + 1
+            if c.claim_status == ClaimStatus.VALIDATED:
+                validated += 1
+            elif c.claim_status == ClaimStatus.CONTRADICTED:
+                contradicted += 1
+        statuses = {c.claim_status.value for c in claims if c.claim_status}
+        latest = "validated" if "validated" in statuses and "contradicted" not in statuses \
+            else "contradicted" if "contradicted" in statuses else "unknown"
+        result.append({
+            "repair_loop_id": loop_id,
+            "total_claims": len(claims),
+            "phase_counts": phases,
+            "validated": validated,
+            "contradicted": contradicted,
+            "latest_status": latest,
+        })
+
+    if parsed.json:
+        print(json.dumps({"repair_loops": result, "count": len(result)}, sort_keys=True))
+        return 0
+
+    print(f"Chimera Memory Repair Loops\n\n{len(result)} loop(s)\n")
+    for r in result:
+        print(f"  loop:        {r['repair_loop_id']}")
+        print(f"  claims:      {r['total_claims']}")
+        print(f"  phases:      {r['phase_counts']}")
+        print(f"  validated:   {r['validated']}  contradicted: {r['contradicted']}")
+        print(f"  latest:      {r['latest_status']}\n")
+    print("Note: repair loop grouping is explicit metadata only. No automatic inference.")
+    return 0
+
+
+def _m2b_readiness(parsed: argparse.Namespace) -> int:
+    from chimera_memory.m2b_readiness import compute_m2b_readiness, format_readiness_text
+
+    dq_only = getattr(parsed, "m2b_dq_only", False)
+    all_ledger = getattr(parsed, "m2b_all_ledger", False)
+    if dq_only and all_ledger:
+        import sys as _sys
+        print("error: --dq-only and --all-ledger are mutually exclusive", file=_sys.stderr)
+        return 2
+
+    mode = "dq_cohort" if dq_only else "all_ledger" if all_ledger else "default"
+    store = MemoryStore.from_paths(root=Path.cwd())
+    report = compute_m2b_readiness(store, mode=mode)
+    if parsed.json:
+        print(json.dumps(report.to_dict(), sort_keys=True))
+    else:
+        print(format_readiness_text(report))
+    return 0
+
+
+def _status(parsed: argparse.Namespace) -> int:
+    status = build_dogfood_status(root=Path.cwd())
+    if parsed.json:
+        print(json.dumps(status, sort_keys=True))
+        return 0
+    prog = status["progress"]
+    exc = status["excluded"]
+    seg = status["segments"]
+    cg = status["comparison_gate"]
+    lines = [
+        "Chimera Memory Status",
+        "",
+        f"Raw records:             {status['raw_records']}",
+        f"Unique claims:           {status['unique_claims']}",
+        f"Settled unique claims:   {status['settled_unique_claims']}",
+        f"Clean unique claims:     {status['clean_unique_claims']}",
+        f"Progress:                {prog['current']} / {prog['target']}",
+        "",
+        "Excluded:",
+        f"  missing session_id:           {exc['missing_session_id']}",
+        f"  agent_id unknown-agent:       {exc['unknown_agent']}",
+        f"  model_version null:           {exc['model_version_null']}",
+        f"  missing task_type:            {exc['missing_task_type']}",
+        f"  missing attribution_conf:     {exc['missing_attribution_confidence']}",
+        f"  missing identity_source:      {exc['missing_identity_source']}",
+        f"  unsettled:                    {exc['unsettled']}",
+        "",
+        "Segments (clean claims):",
+    ]
+    for field, counts in seg.items():
+        lines.append(f"  {field}:")
+        for k, v in sorted(counts.items(), key=lambda x: -x[1]):
+            lines.append(f"    {k}: {v}")
+    lines += [
+        "",
+        "Gate:",
+        f"  volume >= {prog['target']}: {'yes' if prog['met'] else 'no'}",
+        "  comparison dimensions (>=5 each):",
+    ]
+    for dim, vals in cg.items():
+        if vals:
+            parts = ", ".join(f"{k}={v}" for k, v in sorted(vals.items()))
+            lines.append(f"    {dim}: {parts}")
+        else:
+            lines.append(f"    {dim}: (none >= 5)")
+    lines += [
+        f"  useful pattern: {status['reason']}",
+        f"  M2 ready: {'yes' if status['m2_ready'] else 'no'}",
+        f"  M2B readiness: {status.get('m2b_readiness_level', 'unknown')} "
+        f"({status.get('m2b_readiness_evaluation_mode', 'unknown')})",
+    ]
+    integ = status.get("integrity")
+    if integ:
+        lines += [
+            "",
+            "Integrity:",
+            f"  Status: {integ['status']}",
+            f"  Chained records: {integ['chained_records']}",
+            f"  Broken records: {integ['broken_records']}",
+            f"  Unsigned gaps: {integ['unsigned_gaps']}",
+        ]
+    print("\n".join(lines))
+    return 0
+
+
+def _failures(parsed: argparse.Namespace) -> int:
+    from chimera_memory.errata import effective_failure_origin, load_errata
+    from chimera_memory.query import build_claim_read_model
+
+    store = MemoryStore.from_paths(root=Path.cwd())
+    failures = build_claim_read_model(store).failures
+    errata_map = load_errata(store.memory_dir)
+
+    # Apply data-quality filters — failure_origin uses effective (errata-corrected) value
+    fo_filter = getattr(parsed, "filter_failure_origin", None)
+    vs_filter = getattr(parsed, "filter_verification_scope", None)
+    if fo_filter:
+        failures = [c for c in failures if effective_failure_origin(c, errata_map) == fo_filter]
+    if vs_filter:
+        failures = [c for c in failures if c.metadata.get(K_VERIFICATION_SCOPE) == vs_filter]
+    rl_filter = getattr(parsed, "filter_repair_loop_id", None)
+    if rl_filter:
+        failures = [c for c in failures if c.metadata.get(K_REPAIR_LOOP_ID) == rl_filter]
+    rp_filter = getattr(parsed, "filter_repair_phase", None)
+    if rp_filter:
+        failures = [c for c in failures if c.metadata.get(K_REPAIR_PHASE) == rp_filter]
+
+    def _claim_to_dict(c) -> dict[str, Any]:
+        from chimera_memory.adapters.pytest_ci import _ANSI_RE
+
+        m = c.metadata or {}
+        evt_meta: dict[str, Any] = {}
+        if c.settlement and c.settlement.events:
+            evt_meta = c.settlement.events[-1].metadata or {}
+        wrapped = evt_meta.get("wrapped_args") or []
+        d: dict[str, Any] = {
+            "claim_id": c.claim_id,
+            "session_id": m.get("session_id"),
+            "agent_id": m.get("agent_id"),
+            "model_version": m.get("model_version"),
+            "harness_id": m.get("harness_id"),
+            "task_type": m.get("task_type"),
+            "command": _redact(" ".join(str(a) for a in wrapped)) if wrapped else c.title,
+            "status": c.claim_status.value,
+            "exit_code": evt_meta.get("exit_code"),
+            "stdout_excerpt": _ANSI_RE.sub("", str(evt_meta.get("stdout_excerpt", ""))),
+            "stderr_excerpt": _ANSI_RE.sub("", str(evt_meta.get("stderr_excerpt", ""))),
+        }
+        # Add data-quality fields if present; show effective failure_origin
+        for _k in (K_FAILURE_ORIGIN, K_VERIFICATION_SCOPE, K_SCOPE_PATHS,
+                   K_REPAIR_LOOP_ID, K_REPAIR_PHASE):
+            if _k in m:
+                d[_k] = m[_k]
+        # Errata: show effective classification if corrected
+        eff_fo = effective_failure_origin(c, errata_map)
+        if eff_fo != m.get(K_FAILURE_ORIGIN):
+            d["effective_failure_origin"] = eff_fo
+            d["errata_applied"] = True
+        return d
+
+    if parsed.json:
+        payload = {"count": len(failures), "failures": [_claim_to_dict(c) for c in failures]}
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+
+    if not failures:
+        print(
+            "No contradicted claims found. "
+            "All wrapped commands passed, or no commands have been wrapped yet."
+        )
+        return 0
+
+    print(f"Chimera Memory Failures\n\n{len(failures)} failure(s) found\n")
+    for i, c in enumerate(failures, 1):
+        d = _claim_to_dict(c)
+        print(f"- [{i}] claim_id: {d['claim_id']}")
+        print(f"      agent:    {d['agent_id']}")
+        print(f"      model:    {d['model_version']}")
+        print(f"      harness:  {d['harness_id']}")
+        print(f"      task:     {d['task_type']}")
+        print(f"      command:  {d['command']}")
+        print(f"      exit_code:{d['exit_code']}")
+        print(f"      session:  {d['session_id']}")
+        if d["stderr_excerpt"]:
+            print(f"      stderr:   {d['stderr_excerpt'].strip()[:200]}")
+        if d["stdout_excerpt"]:
+            print(f"      stdout:   {d['stdout_excerpt'].strip()[:200]}")
+    return 0
+
+
+def _verify(parsed: argparse.Namespace) -> int:
+    from chimera_memory.integrity import verify_integrity
+
+    report = verify_integrity(Path.cwd() / ".chimera-memory")
+    if parsed.json:
+        print(json.dumps(report.to_dict(), sort_keys=True))
+    else:
+        print("Chimera Memory Integrity\n")
+        print(f"Status:          {report.status}")
+        print(f"Claims:          {report.claims_total}")
+        print(f"Legacy unsigned: {report.legacy_unsigned}")
+        print(f"Chained records: {report.chained_records}")
+        print(f"Broken records:  {report.broken_records}")
+        print(f"Unsigned gaps:   {report.unsigned_gaps}")
+        if report.errors:
+            print("\nErrors:")
+            for err in report.errors:
+                ln = f"line {err.line_number}" if err.line_number is not None else "entry"
+                print(f"  - {ln} [{err.kind}]: {err.message}")
+    return 0 if report.status in ("OK", "LEGACY_UNSIGNED") else 1
+
+
+def _export(parsed: argparse.Namespace) -> int:
+    from chimera_memory.export import build_engine_events, format_events_jsonl
+
+    store = MemoryStore.from_paths(root=Path.cwd())
+    failures_only = getattr(parsed, "failures_only", False)
+    clean_only = getattr(parsed, "clean_only", False)
+    session_id = getattr(parsed, "session_id", None)
+    events = build_engine_events(
+        store,
+        failures_only=failures_only,
+        clean_only=clean_only,
+        session_id=session_id,
+    )
+    jsonl = format_events_jsonl(events)
+
+    output_path = getattr(parsed, "output", None)
+    if output_path:
+        Path(output_path).write_text(jsonl + "\n" if jsonl else "", encoding="utf-8")
+        print(f"Exported {len(events)} event(s) to {output_path}")
+    else:
+        if jsonl:
+            print(jsonl)
+    return 0
+
+
+def _reliability(parsed: argparse.Namespace) -> int:
+    from chimera_memory.data_quality import (
+        validate_failure_origin,
+        validate_repair_phase,
+        validate_verification_scope,
+    )
+    from chimera_memory.reliability import build_reliability_summary, format_reliability_text
+
+    # Resolve --organic-only shorthand
+    fo = getattr(parsed, "rel_failure_origin", None)
+    if getattr(parsed, "rel_organic_only", False):
+        fo = "organic_real"
+
+    # Validate enum filters
+    filters: dict[str, str] = {}
+    try:
+        if fo:
+            filters["failure_origin"] = validate_failure_origin(fo)
+        vs = getattr(parsed, "rel_verification_scope", None)
+        if vs:
+            filters["verification_scope"] = validate_verification_scope(vs)
+        rp = getattr(parsed, "rel_repair_phase", None)
+        if rp:
+            filters["repair_phase"] = validate_repair_phase(rp)
+        rl = getattr(parsed, "rel_repair_loop_id", None)
+        if rl:
+            filters["repair_loop_id"] = rl
+    except ValueError as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+
+    store = MemoryStore.from_paths(root=Path.cwd())
+    summary = build_reliability_summary(store, filters=filters or None)
+    if parsed.json:
+        print(json.dumps(summary.to_dict(), sort_keys=True))
+    else:
+        print(format_reliability_text(summary))
+    return 0
+
+
+def _resolve_wrap_attribution(
+    *,
+    active_session: dict[str, Any] | None,
+    explicit_agent: str | None,
+    explicit_model: str | None,
+) -> dict[str, Any]:
+    """Resolve attribution for a wrapped claim.
+
+    Priority: explicit CLI flags > CHIMERA_* env > active session > legacy defaults.
+    Unknown stays unknown.
+    """
+    env_agent = os.environ.get("CHIMERA_AGENT")
+    env_model = os.environ.get("CHIMERA_MODEL")
+    session = active_session or {}
+
+    agent_id = explicit_agent or env_agent or session.get("agent_app") or "unknown-agent"
+    model_version = explicit_model or env_model or session.get("model")
+
+    resolved: dict[str, Any] = {
+        "agent_id": agent_id,
+        "model_version": model_version,
+    }
+    if active_session is not None:
+        resolved["harness_id"] = session.get("harness_id")
+        resolved["attribution_confidence"] = session.get("attribution_confidence")
+        resolved["identity_source"] = session.get("identity_source")
+    return resolved
+
+
+def _wrap_pytest(parsed: argparse.Namespace) -> int:
+    command_args = list(parsed.wrapped)
+    # Strip leading '--' separator if present (allows: wrap --task-type lint -- ruff check .)
+    if command_args and command_args[0] == "--":
+        command_args = command_args[1:]
+
+    task_type = parsed.task_type or os.environ.get("CHIMERA_TASK_TYPE") or "test"
+    claim_time = datetime.now(UTC)
+    git_evidence, git_metadata = capture_git_evidence(root=Path.cwd(), claim_time=claim_time)
+
+    extra_metadata: dict[str, object] = {"git": git_metadata}
+    _store = MemoryStore.from_paths(root=Path.cwd())
+    _current = _store.current_session()
+
+    # No-write mode: run command but skip all ledger writes
+    _no_write = bool(os.environ.get("CHIMERA_DQ_NO_WRITE", ""))
+    if not _no_write and _current is None:
+        import sys as _sys
+        print(
+            "Warning: no active session. Run:\n"
+            "  chimera-memory session start --branch <branch> --task-label <label>"
+            " --agent <agent> --model <model> --harness-id <id>",
+            file=_sys.stderr,
+        )
+
+    attribution = _resolve_wrap_attribution(
+        active_session=_current,
+        explicit_agent=parsed.agent_id,
+        explicit_model=parsed.model_version,
+    )
+    agent_id = attribution["agent_id"]
+    model_version = attribution["model_version"]
+
+    if _current is not None:
+        extra_metadata["session_id"] = _current["session_id"]
+        for key in ("harness_id", "attribution_confidence", "identity_source"):
+            value = attribution.get(key)
+            if value is not None:
+                extra_metadata[key] = value
+
+    cmd_display = " ".join(command_args) if command_args else "(empty)"
+    is_pytest = command_args and command_args[0] == "pytest"
+
+    # --- data-quality metadata: validate and inject if provided ---
+    try:
+        if getattr(parsed, "failure_origin", None):
+            extra_metadata[K_FAILURE_ORIGIN] = validate_failure_origin(parsed.failure_origin)
+        if getattr(parsed, "verification_scope", None):
+            extra_metadata[K_VERIFICATION_SCOPE] = validate_verification_scope(
+                parsed.verification_scope
+            )
+        if getattr(parsed, "scope_paths", None):
+            extra_metadata[K_SCOPE_PATHS] = list(parsed.scope_paths)
+        for attr, key in (
+            ("scope_intent", K_SCOPE_INTENT),
+            ("repair_loop_id", K_REPAIR_LOOP_ID),
+            ("repair_of_claim_id", K_REPAIR_OF_CLAIM_ID),
+            ("baseline_claim_id", K_BASELINE_CLAIM_ID),
+            ("residual_out_of_scope", K_RESIDUAL_OUT_OF_SCOPE),
+        ):
+            val = getattr(parsed, attr, None)
+            if val:
+                extra_metadata[key] = val
+        if getattr(parsed, "repair_phase", None):
+            extra_metadata[K_REPAIR_PHASE] = validate_repair_phase(parsed.repair_phase)
+    except ValueError as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+    claim_id = record_claim(
+        title=f"{cmd_display} will pass",
+        summary=f"Wrapped command is expected to exit 0: {cmd_display}",
+        predicted=True,
+        evidence=[
+            {
+                "ref_type": EvidenceRefType.EXTERNAL,
+                "ref_id": f"cmd:{claim_time.isoformat()}",
+                "available_at": claim_time,
+            }
+        ]
+        + git_evidence,
+        claim_time=claim_time,
+        confidence=parsed.confidence,
+        agent_id=agent_id,
+        model_version=model_version,
+        task_type=task_type,
+        extra_metadata=extra_metadata,
+    ) if not _no_write else "no-write-00000000-0000-0000-0000-000000000000"
+    result = run_pytest(command_args) if is_pytest else run_command(command_args)
+    observed_at = datetime.now(UTC)
+    if not _no_write:
+        settle_claim(
+            claim_id,
+            result.observed,
+            observed_at,
+            event_metadata={
+                "exit_code": result.exit_code,
+                "command": result.command,
+                "wrapped_args": command_args,
+                "duration_seconds": result.duration_seconds,
+                "stdout_excerpt": _redact(result.stdout_excerpt),
+                "stderr_excerpt": _redact(result.stderr_excerpt),
+            },
+        )
+        export_report()  # noqa: F841  # kept for side-effects
+    outcome = "VALIDATED" if result.observed else "CONTRADICTED"
+    cmd_display = " ".join(str(a) for a in command_args[:3])
+    if len(command_args) > 3:
+        cmd_display += " …"
+    witness = ""
+    if not result.observed and result.stderr_excerpt:
+        witness = f" witness={result.stderr_excerpt.strip()[:80]!r}"
+    elif not result.observed and result.stdout_excerpt:
+        witness = f" witness={result.stdout_excerpt.strip()[:80]!r}"
+    print(
+        f"{outcome} claim_id={claim_id[:8]} exit_code={result.exit_code}"
+        f" command={cmd_display!r}{witness}"
+    )
+    if _no_write:
+        print("[chimera-memory] CHIMERA_DQ_NO_WRITE set — claim not recorded")
+    return result.exit_code
+
+
+def _plain_report(report: dict[str, object]) -> str:
+    lines = ["Reliability report"]
+    groups = report.get("groups", [])
+    if isinstance(groups, list):
+        for group in groups:
+            lines.append(json.dumps(group, sort_keys=True))
+    lines.append("")
+    lines.append(
+        "Note: This report includes all claim groups, including pre-attribution records. "
+        "For dogfood gate progress and clean-claim counts, use: chimera-memory status"
+    )
+    return "\n".join(lines)
+
+
+def _plain_drift(result: dict[str, object]) -> str:
+    lines = ["Drift advisory"]
+    groups = result.get("groups", [])
+    if isinstance(groups, list):
+        for group in groups:
+            if isinstance(group, dict):
+                lines.append(
+                    f"{group.get('group')}: {group.get('status')} "
+                    f"shift={group.get('score_shift')} {group.get('message')}"
+                )
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# session subcommand handlers
+# -----------------------------------------------------------------------------
+
+
+def _handle_session(parsed: argparse.Namespace) -> int:
+    sub = parsed.session_command
+    try:
+        if sub == "start":
+            return _session_start(parsed)
+        if sub == "end":
+            return _session_end(parsed)
+        if sub == "list":
+            return _session_list(parsed)
+        if sub == "current":
+            return _session_current(parsed)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 1
+    print(f"session: unknown subcommand '{sub}'", file=__import__("sys").stderr)
+    return 2
+
+
+def _memory_root(parsed: argparse.Namespace) -> Path:
+    """Resolve the memory root from --memory-dir (or cwd fallback)."""
+    md = getattr(parsed, "memory_dir", None)
+    return Path(md).resolve() if md else Path.cwd()
+
+
+def _session_start(parsed: argparse.Namespace) -> int:
+    root = _memory_root(parsed)
+    sid = start_session(
+        repo_path=root,
+        branch=parsed.branch,
+        task_label=parsed.task_label,
+        agent_app=parsed.agent,
+        model=parsed.model,
+        harness_id=getattr(parsed, "harness_id", None),
+    )
+    print(sid)
+    return 0
+
+
+def _session_end(parsed: argparse.Namespace) -> int:
+    root = _memory_root(parsed)
+    # --status is an alias for --final-status; --final-status takes precedence
+    raw_status = parsed.final_status or getattr(parsed, "status", None)
+    final = FinalStatus(raw_status.lower()) if raw_status else None
+    sid = end_session(repo_path=root, final_status=final)
+    store = MemoryStore.from_paths(root=root)
+    session_dict = store.get_session(sid)
+    if session_dict is None:
+        print(f"error: session {sid} not found", file=__import__("sys").stderr)
+        return 1
+    receipt = build_receipt(session_dict, root=root)
+    if parsed.json:
+        print(format_receipt_json(receipt), end="")
+    else:
+        print(format_receipt_text(receipt), end="")
+    return 0
+
+
+def _session_list(parsed: argparse.Namespace) -> int:
+    root = _memory_root(parsed)
+    store = MemoryStore.from_paths(root=root)
+    closed = store.list_sessions()
+    if not closed:
+        print("No closed sessions.")
+        return 0
+    print(f"{'SESSION_ID':<40} {'TASK':<40} {'STATUS':<10} {'ENDED'}")
+    for s_dict in closed:
+        s = Session.from_dict(s_dict)
+        ended = (s.ended_at or "")[:19]
+        status = s.final_status.value if s.final_status else "unknown"
+        task = s.task_label[:38] + ".." if len(s.task_label) > 40 else s.task_label
+        print(f"{s.session_id:<40} {task:<40} {status:<10} {ended}")
+    return 0
+
+
+def _session_current(parsed: argparse.Namespace) -> int:
+    root = _memory_root(parsed)
+    store = MemoryStore.from_paths(root=root)
+    current = store.current_session()
+    if current is None:
+        print("No open session.")
+        return 0
+    s = Session.from_dict(current)
+    print(f"open session: {s.session_id}")
+    print(f"  task:   {s.task_label}")
+    print(f"  agent:  {s.agent_app}")
+    print(f"  model:  {s.model}")
+    print(f"  branch: {s.branch}")
+    print(f"  start:  {s.started_at}")
+    return 0
+
+
+# -----------------------------------------------------------------------------
+# receipt subcommand handlers
+# -----------------------------------------------------------------------------
+
+
+def _handle_receipt(parsed: argparse.Namespace) -> int:
+    sub = getattr(parsed, "receipt_command", None)
+    if sub == "show":
+        return _receipt_show(parsed)
+    if sub == "latest":
+        return _receipt_latest(parsed)
+    if sub == "bundle":
+        return _receipt_bundle(parsed)
+    print(f"receipt: unknown subcommand '{sub}'", file=__import__("sys").stderr)
+    return 2
+
+
+def _receipt_latest(parsed: argparse.Namespace) -> int:
+    root = _memory_root(parsed)
+    store = MemoryStore.from_paths(root=root)
+    closed = store.list_sessions()
+    if not closed:
+        print(
+            "No closed sessions found.\n"
+            "Start one with:\n"
+            "  chimera-memory session start --branch <branch> --task-label <task> --agent <name>\\n"
+            "  chimera-memory wrap -- <verification-command>\n"
+            "  chimera-memory session end --status PASSED",
+            file=__import__("sys").stderr,
+        )
+        return 1
+    session_dict = closed[0]
+    receipt = build_receipt(session_dict, root=root)
+    return _emit_receipt(receipt, parsed)
+
+
+def _emit_receipt(receipt: dict, parsed: argparse.Namespace) -> int:
+    """Render receipt to stdout or --output file in text/json/markdown/github-summary format."""
+    from chimera_memory.receipt import (
+        format_receipt_github_summary,
+        format_receipt_json,
+        format_receipt_text,
+    )
+
+    fmt = getattr(parsed, "receipt_format", None)
+    use_json = parsed.json or fmt == "json"
+    use_md = getattr(parsed, "markdown", False) or fmt == "markdown"
+    use_github = fmt == "github-summary"
+    if use_json:
+        content = format_receipt_json(receipt)
+    elif use_md:
+        content = format_receipt_markdown(receipt)
+    elif use_github:
+        content = format_receipt_github_summary(receipt)
+    else:
+        content = format_receipt_text(receipt)
+    output_path = getattr(parsed, "receipt_output", None)
+    if output_path:
+        import os
+        tmp = output_path + ".tmp"
+        Path(tmp).write_text(content, encoding="utf-8")
+        os.replace(tmp, output_path)
+    else:
+        print(content, end="")
+    return 0
+
+
+def _receipt_bundle(parsed: argparse.Namespace) -> int:
+    """Write receipt + status + reliability + verify + optional preflight into a directory."""
+    from chimera_memory.integrity import verify_integrity
+    from chimera_memory.receipt import format_receipt_github_summary, format_receipt_json
+    from chimera_memory.reliability import build_reliability_summary
+
+    root = _memory_root(parsed)
+    store = MemoryStore.from_paths(root=root)
+    closed = store.list_sessions()
+    if not closed:
+        print("No closed sessions to bundle.", file=__import__("sys").stderr)
+        return 1
+
+    out_dir = Path(parsed.bundle_output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    receipt = build_receipt(closed[0], root=root)
+
+    def _write(name: str, content: str) -> None:
+        tmp = out_dir / f".{name}.tmp"
+        tmp.write_text(content, encoding="utf-8")
+        __import__("os").replace(tmp, out_dir / name)
+
+    # Optional preflight section
+    preflight_report = None
+    if getattr(parsed, "bundle_include_preflight", False):
+        try:
+            from chimera_memory.preflight import (
+                build_preflight,
+                format_preflight_markdown,
+                infer_scopes_from_git,
+            )
+            scope_paths = list(getattr(parsed, "bundle_scope_paths", None) or [])
+            if getattr(parsed, "bundle_from_git", False):
+                scope_paths = list(dict.fromkeys(scope_paths + infer_scopes_from_git(root)[1]))
+            preflight_report = build_preflight(store, scope_paths=scope_paths)
+            _write("preflight.json", json.dumps(preflight_report.to_dict(), sort_keys=True))
+            _write("preflight.md", format_preflight_markdown(preflight_report))
+        except Exception as exc:
+            _write("preflight.json", json.dumps({"error": str(exc)}, sort_keys=True))
+
+    _write("receipt.md", format_receipt_markdown(receipt))
+    _write("receipt.json", format_receipt_json(receipt))
+    _write("github-summary.md",
+           format_receipt_github_summary(receipt, preflight_report=preflight_report))
+
+    from chimera_memory.ledger import build_dogfood_status
+    try:
+        _write("status.json", json.dumps(build_dogfood_status(root=root), sort_keys=True))
+    except Exception:
+        pass
+    try:
+        _write("reliability.json", json.dumps(build_reliability_summary(store).to_dict(),
+                                              sort_keys=True))
+    except Exception:
+        pass
+    try:
+        from chimera_memory.query import build_claim_read_model
+        failures_data = [{"claim_id": c.claim_id, "status": c.claim_status.value,
+                          "title": c.title} for c in build_claim_read_model(store).failures]
+        _write("failures.json", json.dumps({"failures": failures_data}, sort_keys=True))
+    except Exception:
+        pass
+    try:
+        _write("verify.json", json.dumps(verify_integrity(store.memory_dir).to_dict(),
+                                         sort_keys=True))
+    except Exception:
+        pass
+
+    files = sorted(p.name for p in out_dir.iterdir() if not p.name.startswith("."))
+    print(f"Bundle written to {out_dir}/ ({len(files)} files): {', '.join(files)}")
+    return 0
+
+def _receipt_show(parsed: argparse.Namespace) -> int:
+    root = _memory_root(parsed)
+    store = MemoryStore.from_paths(root=root)
+    session_dict = store.get_session(parsed.session_id)
+    if session_dict is None:
+        print(f"error: session {parsed.session_id} not found", file=__import__("sys").stderr)
+        return 1
+    receipt = build_receipt(session_dict, root=root)
+    return _emit_receipt(receipt, parsed)

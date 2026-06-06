@@ -1,0 +1,174 @@
+# Chimera Memory Live CI Dogfood Workflow
+#
+# This workflow self-dogfoods chimera-memory using the package from this repo.
+#
+# Trigger: workflow_dispatch only.
+# Reason: push/PR triggers are disabled because this repo has APFS dataless
+#   pack objects that cause push startup_failure. Manual dispatch avoids noise.
+#   Enable push/PR triggers only from a clean clone.
+#
+# What this workflow does:
+#   1. Checkout with full history (for preflight --from-git)
+#   2. Install chimera-memory from this checkout (not PyPI)
+#   3. Run chimera-memory preflight (advisory — never blocks)
+#   4. Start a chimera-memory session
+#   5. Wrap pytest / mypy / ruff (exit codes propagate — failing checks fail CI)
+#   6. End session (always — so receipt exists even on failure)
+#   7. Generate receipt bundle with preflight
+#   8. Generate evidence bundle + dry-run import report
+#   9. Append GitHub Step Summary
+#   10. Upload artifact bundle
+#
+# Safety guarantees:
+#   - No secrets required
+#   - No publish, tag, or push operations
+#   - Raw .chimera-memory/ ledger is NOT uploaded (only generated bundle)
+#   - Artifacts are local evidence only — no hosted sync
+#
+# Exit-code contract:
+#   - chimera-memory wrap exits with the same code as the wrapped command
+#   - A CONTRADICTED claim does NOT suppress the exit code
+#   - Receipt generation always runs (if: always())
+#
+# Not built: M2B scoring, model routing, hosted/cloud, write-import, dashboard.
+
+name: chimera-memory CI dogfood
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual trigger"
+        required: false
+        default: "manual CI dogfood"
+
+  # Uncomment to enable on PRs once APFS push startup_failure is resolved:
+  # pull_request:
+  #   branches: [main]
+  #   paths:
+  #     - "packages/chimera-memory/**"
+  #     - "packages/chimera-memory-types/**"
+
+jobs:
+  chimera-memory-dogfood:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for preflight --from-git
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv --quiet
+
+      # Install chimera-memory from this checkout (not from PyPI).
+      # This tests the current source state, not a pinned release.
+      - name: Install chimera-memory from checkout
+        run: |
+          uv build packages/chimera-memory-types --out-dir /tmp/cm-ci-dist --quiet
+          uv build packages/chimera-memory --out-dir /tmp/cm-ci-dist --quiet
+          pip install /tmp/cm-ci-dist/*.whl --quiet
+          chimera-memory --version
+
+      # ── Preflight (advisory — never blocks the run) ──────────────────────
+      - name: Preflight advisory
+        continue-on-error: true
+        run: |
+          mkdir -p ci-bundle
+          chimera-memory preflight --from-git --json > ci-bundle/preflight.json 2>/dev/null || true
+          chimera-memory preflight --from-git > ci-bundle/preflight.md 2>/dev/null || true
+          echo "Preflight complete (source: none on clean tree is expected)"
+
+      # ── Session ──────────────────────────────────────────────────────────
+      - name: Start chimera-memory session
+        run: |
+          chimera-memory init
+          chimera-memory session start \
+            --branch "${{ github.ref_name }}" \
+            --task-label "CI dogfood: ${{ github.run_id }}" \
+            --agent ci \
+            --model github-actions \
+            --harness-id github-actions
+
+      # ── Wrapped verification (exit code preserved) ────────────────────────
+      - name: Wrap pytest
+        run: |
+          chimera-memory wrap \
+            --failure-origin organic_real \
+            --verification-scope package \
+            --scope-path packages/chimera-memory \
+            --repair-loop-id "ci-${{ github.run_id }}" \
+            --repair-phase baseline \
+            -- pytest packages/chimera-memory/tests -m "not slow" --tb=short -q
+
+      - name: Wrap mypy
+        run: |
+          chimera-memory wrap \
+            --failure-origin organic_real \
+            --verification-scope package \
+            --scope-path packages/chimera-memory/src \
+            --repair-loop-id "ci-${{ github.run_id }}" \
+            --repair-phase baseline \
+            -- mypy packages/chimera-memory/src --ignore-missing-imports
+
+      - name: Wrap ruff
+        run: |
+          chimera-memory wrap \
+            --failure-origin organic_real \
+            --verification-scope package \
+            --scope-path packages/chimera-memory \
+            --repair-loop-id "ci-${{ github.run_id }}" \
+            --repair-phase baseline \
+            -- ruff check packages/chimera-memory/src \
+               packages/chimera-memory/tests \
+               packages/chimera-memory-types/src
+
+      # ── End session (always) ─────────────────────────────────────────────
+      - name: End session
+        if: always()
+        run: |
+          chimera-memory session end --status PASSED || \
+          chimera-memory session end --status FAILED || true
+
+      # ── Receipt + evidence bundles (always) ──────────────────────────────
+      - name: Generate receipt bundle
+        if: always()
+        run: |
+          chimera-memory receipt bundle \
+            --output-dir ci-bundle \
+            --include-preflight \
+            --from-git || true
+
+      - name: Generate evidence bundle
+        if: always()
+        run: |
+          mkdir -p ci-bundle/evidence
+          chimera-memory evidence bundle --output-dir ci-bundle/evidence || true
+          chimera-memory evidence import ci-bundle/evidence \
+            --dry-run --json > ci-bundle/evidence-dry-run.json 2>/dev/null || true
+
+      # ── GitHub Step Summary ───────────────────────────────────────────────
+      - name: Write GitHub Step Summary
+        if: always()
+        run: |
+          if [ -f ci-bundle/github-summary.md ]; then
+            cat ci-bundle/github-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── Upload artifact (always — critical: upload .chimera-memory/ is excluded) ──
+      - name: Upload chimera-memory bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chimera-memory-bundle-${{ github.run_id }}
+          path: ci-bundle/
+          # NOTE: ci-bundle/ contains only generated artifacts (receipt, preflight,
+          # reliability, failures, verify, evidence bundle).
+          # The raw .chimera-memory/ ledger is NOT included.
+          retention-days: 30

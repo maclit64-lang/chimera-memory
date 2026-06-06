@@ -1,0 +1,35 @@
+[project]
+name = "chimera-memory"
+version = "0.5.0"
+description = "Local-first reliability ledger for AI coding-agent work"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { file = "LICENSE" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "chimera-memory-types",
+    "filelock>=3.0",
+]
+
+[project.scripts]
+chimera-memory = "chimera_memory.cli:main"
+
+[tool.uv.sources]
+chimera-memory-types = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chimera_memory"]

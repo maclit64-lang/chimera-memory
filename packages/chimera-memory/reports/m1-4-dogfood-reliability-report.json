@@ -1,0 +1,121 @@
+{
+  "title": "Chimera Memory M1-4 Dogfood Reliability Report",
+  "repo_path": "/Users/agbodaniel/Code/chimera",
+  "branch": "feat/sealed-claim-wave-ab-c1",
+  "base_head": "0d448bbc43c2450a6a8b9da21e7567b912ffeab0",
+  "data_provenance": {
+    "original_ci_available_locally": false,
+    "local_ci_artifact_discovery": "Only .github/workflows and pytest cache were found locally; no per-commit CI/job result artifacts were available in the checkout.",
+    "replay_performed": true,
+    "honesty_label": "REPLAYED TEST OUTCOMES — not original CI history",
+    "replay_method": "Temporary detached local git worktree at /tmp/chimera-memory-m1-4-replay; current worktree was not checked out to old commits; no fetch/pull/push/network git command was used.",
+    "replay_command": "PYTHONPATH=<temp worktree package srcs> /Users/agbodaniel/Code/chimera/.venv/bin/python -m pytest packages/chimera-memory/tests -q"
+  },
+  "included_commits": [
+    {
+      "sha": "da7015d8e9e7b169c685d815f0feda5ea351d0c1",
+      "short_sha": "da7015d8e9",
+      "slice": "M0-1 skeleton",
+      "subject": "feat: add chimera memory skeleton",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "3 passed in 0.01s"
+    },
+    {
+      "sha": "ef7d7e517493cd910890d8e285c5ce6ceb8d9fb2",
+      "short_sha": "ef7d7e5174",
+      "slice": "M0-2 record/seal",
+      "subject": "feat: record and seal chimera memory claims",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "7 passed in 0.09s"
+    },
+    {
+      "sha": "f6c813dc1dfa6d0c8e0aca1b09220dae9ff1e909",
+      "short_sha": "f6c813dc1d",
+      "slice": "M0-3 settle/score",
+      "subject": "feat: settle and score chimera memory claims",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "14 passed in 0.12s"
+    },
+    {
+      "sha": "9899f0018c886b21a2249e874674892acab32700",
+      "short_sha": "9899f0018c",
+      "slice": "M0-4 query/report storage",
+      "subject": "feat: query and report chimera memory ledger",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "19 passed in 0.16s"
+    },
+    {
+      "sha": "95e7e0ef1b62aca7477d722a6f09b2648670fb3e",
+      "short_sha": "95e7e0ef1b62",
+      "slice": "M1-1 pytest wrapper",
+      "subject": "feat: wrap pytest with chimera memory ledger",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "28 passed in 1.27s"
+    },
+    {
+      "sha": "b4fea5957b627950c09bb43ba58aad1a6fe0284c",
+      "short_sha": "b4fea5957b62",
+      "slice": "M1-2 git evidence",
+      "subject": "feat: capture git evidence for chimera memory claims",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "33 passed in 1.87s"
+    },
+    {
+      "sha": "0d448bbc43c2450a6a8b9da21e7567b912ffeab0",
+      "short_sha": "0d448bbc43c2",
+      "slice": "M1-3 advisory drift/report CLI",
+      "subject": "feat: add advisory drift and report cli",
+      "exit_code": 0,
+      "passed": true,
+      "pytest_summary": "42 passed in 2.04s"
+    }
+  ],
+  "reliability_summary": {
+    "overall": {
+      "commits": 7,
+      "passed": 7,
+      "failed": 0,
+      "pass_rate": 1.0
+    },
+    "by_agent": [
+      {
+        "agent": "Agent 4 implementer, as reported in the handoff transcript",
+        "commits": 7,
+        "passed": 7,
+        "failed": 0,
+        "pass_rate": 1.0,
+        "metadata_quality": "external transcript label only; not machine-readable commit metadata"
+      }
+    ],
+    "by_model": [
+      {
+        "model_version": "UNKNOWN_NOT_RECORDED_IN_COMMITS",
+        "commits": 7,
+        "passed": 7,
+        "failed": 0,
+        "pass_rate": 1.0,
+        "metadata_quality": "insufficient model metadata for model comparison"
+      }
+    ],
+    "by_task_type": [
+      {"task_type": "skeleton", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+      {"task_type": "record/seal", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+      {"task_type": "settle/score", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+      {"task_type": "query/report", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+      {"task_type": "pytest wrapper", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+      {"task_type": "git evidence", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+      {"task_type": "drift/report CLI", "commits": 1, "passed": 1, "failed": 0, "pass_rate": 1.0}
+    ]
+  },
+  "sample_status": "INSUFFICIENT_DATA",
+  "insufficient_data_reason": "Seven replayed commits are enough for a smoke/dogfood report, but below Chimera Memory's default 30-claim drift threshold and too sparse for meaningful agent/model/task-type degradation comparison.",
+  "decision_gate_answer": "No — the report revealed that the M0/M1 chain replays cleanly and that metadata capture is missing, but it did not yet reveal a materially useful reliability-by-agent/model/task-type pattern because the sample is sparse and model metadata is absent.",
+  "recommendation": "Reassess the wedge before M2 product expansion: keep using wrap pytest on real agent work until at least 30 settled claims with explicit agent/model/task_type metadata exist, then rerun the decision gate.",
+  "stopped_before_m2": true
+}

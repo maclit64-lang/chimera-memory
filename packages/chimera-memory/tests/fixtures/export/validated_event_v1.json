@@ -1,0 +1,62 @@
+{
+  "agent": {
+    "attribution_confidence": "high",
+    "harness_id": "kiro-cli",
+    "id": "kiro",
+    "identity_source": "cli_flag",
+    "model": "claude-sonnet-4.6"
+  },
+  "claim_id": "claim-validated",
+  "command": {
+    "args": [
+      "uv",
+      "run",
+      "pytest",
+      "-q"
+    ],
+    "display": "uv run pytest -q"
+  },
+  "data_quality": {
+    "baseline_claim_id": null,
+    "failure_origin": null,
+    "repair_loop_id": null,
+    "repair_of_claim_id": null,
+    "repair_phase": null,
+    "residual_out_of_scope": null,
+    "scope_intent": null,
+    "scope_paths": null,
+    "verification_scope": null
+  },
+  "effective_data_quality": {
+    "errata_applied": false,
+    "failure_origin": null,
+    "verification_scope": null
+  },
+  "event_id": "evt-claim-validated",
+  "event_type": "memory.claim.settled",
+  "git": {
+    "branch": null,
+    "commit": null,
+    "dirty": false,
+    "files_changed": []
+  },
+  "integrity": {
+    "status": "OK"
+  },
+  "outcome": {
+    "exit_code": 0,
+    "status": "VALIDATED"
+  },
+  "schema_version": 1,
+  "session_id": "sess-fixture-validated",
+  "source": "chimera-memory",
+  "task": {
+    "label": "uv run pytest -q will pass",
+    "type": "test"
+  },
+  "timestamp": "2026-01-01T00:00:00+00:00",
+  "witness": {
+    "stderr_excerpt": null,
+    "stdout_excerpt": null
+  }
+}
