@@ -279,3 +279,33 @@ def test_preflight_from_git_works(tmp_path, capsys):
     capsys.readouterr()
     result = main(["preflight", "--from-git"])
     assert result == 0
+
+
+def test_recent_failures_excludes_test_first_contract(tmp_path, monkeypatch, capsys):
+    """test_first_contract must not appear in recent_failures either."""
+    _init_and_session(tmp_path)
+    main(["wrap", "--failure-origin", "test_first_contract",
+          "--verification-scope", "package",
+          "--scope-path", str(tmp_path),
+          "--", sys.executable, "-c", "import sys; sys.exit(1)"])
+    capsys.readouterr()
+    main(["preflight", "--scope-path", str(tmp_path), "--json"])
+    out = capsys.readouterr().out
+    d = json.loads(out)
+    for f in d.get("recent_failures", []):
+        assert f["effective_failure_origin"] != "test_first_contract"
+
+
+def test_recent_failures_excludes_synthetic(tmp_path, monkeypatch, capsys):
+    """synthetic must not appear in recent_failures."""
+    _init_and_session(tmp_path)
+    main(["wrap", "--failure-origin", "synthetic",
+          "--verification-scope", "package",
+          "--scope-path", str(tmp_path),
+          "--", sys.executable, "-c", "import sys; sys.exit(1)"])
+    capsys.readouterr()
+    main(["preflight", "--scope-path", str(tmp_path), "--json"])
+    out = capsys.readouterr().out
+    d = json.loads(out)
+    for f in d.get("recent_failures", []):
+        assert f["effective_failure_origin"] != "synthetic"

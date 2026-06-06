@@ -502,10 +502,12 @@ def build_preflight(
             if (c.metadata or {}).get("verification_scope") == verification_scope
         ]
 
-    # Recent failures (CONTRADICTED, effective origin not invocation_artifact)
+    # Recent failures (CONTRADICTED, exclude fixture/synthetic origins)
+    _RECENT_EXCLUDED = {"test_first_contract", "synthetic", None}
     failures = [
         c for c in candidates
         if c.claim_status == ClaimStatus.CONTRADICTED
+        and effective_failure_origin(c, errata_map) not in _RECENT_EXCLUDED
     ]
     failure_dicts = []
     for c in failures[-limit:]:
@@ -640,7 +642,11 @@ def build_preflight(
         hygiene_warnings.append(HygieneWarning(
             pattern=fam,
             count=len(items),
-            lesson=_lesson_text(fam, "invocation_artifact", None),
+            lesson=(
+                "Observed hygiene issue: this command family failed due to "
+                "invocation setup problems (quoting, missing tool, wrong path). "
+                "Not a product defect — check tool availability and invocation syntax."
+            ),
             example_claim_id=items[0][0],
         ))
 

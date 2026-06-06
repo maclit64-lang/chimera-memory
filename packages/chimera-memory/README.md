@@ -55,6 +55,23 @@ chimera-memory doctor --json
 
 Exit code: `0` = healthy, `1` = warnings (e.g. no active session), `2` = critical (e.g. not initialized).
 
+## Preflight Intelligence (v0.6)
+
+Before starting work, surface historical failures, repair-loop lessons, and hygiene warnings:
+
+```bash
+chimera-memory preflight --from-git
+chimera-memory preflight --scope-path packages/chimera-memory
+```
+
+Shows:
+- Historical failures in the relevant scope (organic_real + controlled_real)
+- Repair-loop lessons (what failed, was it fixed?)
+- Hygiene warnings (invocation_artifact issues — not product defects)
+- Recommended verification commands
+
+Not M2B scoring or model ranking. Advisory only.
+
 ## Preflight check
 
 Before starting work, run a preflight advisory:
