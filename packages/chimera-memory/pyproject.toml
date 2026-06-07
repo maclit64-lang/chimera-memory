@@ -5,6 +5,9 @@ description = "Local-first reliability ledger for AI coding-agent work"
 requires-python = ">=3.12"
 readme = "README.md"
 license = { file = "LICENSE" }
+authors = [
+    { name = "ORIAS", email = "hello@orias.dev" },
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -20,6 +23,11 @@ dependencies = [
     "chimera-memory-types>=0.11.0,<1.0",
     "filelock>=3.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/maclit64-lang/chimera-memory"
+Source = "https://github.com/maclit64-lang/chimera-memory"
+Issues = "https://github.com/maclit64-lang/chimera-memory/issues"
 
 [project.scripts]
 chimera-memory = "chimera_memory.cli:main"
