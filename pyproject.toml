@@ -21,7 +21,7 @@ addopts = "-v --import-mode=importlib"
 markers = [
     "slow: marks tests as slow (deselect with -m 'not slow')",
 ]
-collect_ignore = ["packages/chimera-memory/tests/test_record_claim.py"]
+
 
 [tool.mypy]
 python_version = "3.12"

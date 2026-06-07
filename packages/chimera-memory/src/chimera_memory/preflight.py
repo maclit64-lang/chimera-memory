@@ -46,26 +46,95 @@ _SCOPE_CHECKS: dict[str, list[str]] = {
         "mypy packages/chimera-memory-types/src",
         "ruff check packages/chimera-memory-types/src",
     ],
-    "docs": [
-        "ruff check docs  # only if docs/ exists and ruff targets it",
-        "chimera-memory verify",
-    ],
-    "apps": [
-        "pytest apps/ -m 'not slow'  # run app-level tests",
-        "mypy apps/ --ignore-missing-imports",
-        "ruff check apps/",
-        "chimera-memory verify",
-    ],
-    "tools": [
-        "ruff check tools/",
-        "mypy tools/ --ignore-missing-imports",
-        "chimera-memory verify",
-    ],
-    "scripts": [
-        "ruff check scripts/",
-        "chimera-memory verify",
-    ],
 }
+_GENERIC_CHECKS = [
+    "chimera-memory verify",
+    "chimera-memory status",
+    "chimera-memory m2b-readiness",
+]
+
+# ---------------------------------------------------------------------------
+# Intelligence typed structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class KnownFailure:
+    """An enriched historical failure relevant to the current scope."""
+    claim_id: str
+    command: str
+    scope_paths: list[str]
+    effective_failure_origin: str
+    repair_loop_id: str | None
+    repair_status: str  # fixed_same_scope | later_regression_validated | classified_errata | open
+    lesson: str
+    witness_excerpt: str | None
+    scope_match_reason: str  # exact | parent | child
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "claim_id": self.claim_id,
+            "command": self.command,
+            "scope_paths": self.scope_paths,
+            "effective_failure_origin": self.effective_failure_origin,
+            "repair_loop_id": self.repair_loop_id,
+            "repair_status": self.repair_status,
+            "lesson": self.lesson,
+            "witness_excerpt": self.witness_excerpt,
+            "scope_match_reason": self.scope_match_reason,
+        }
+
+
+@dataclass
+class RepairLoopLesson:
+    """A synthesized lesson from a repair loop that touched the current scope."""
+    repair_loop_id: str
+    baseline_failures: int
+    fix_validations: int
+    status: str  # fixed | has_validations | open
+    lesson: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "repair_loop_id": self.repair_loop_id,
+            "baseline_failures": self.baseline_failures,
+            "fix_validations": self.fix_validations,
+            "status": self.status,
+            "lesson": self.lesson,
+        }
+
+
+@dataclass
+class HygieneWarning:
+    """A recurring invocation_artifact pattern — not a product defect."""
+    pattern: str
+    count: int
+    lesson: str
+    example_claim_id: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pattern": self.pattern,
+            "count": self.count,
+            "lesson": self.lesson,
+            "example_claim_id": self.example_claim_id,
+        }
+
+
+@dataclass
+class FailureSignature:
+    """Stable fingerprint of a recurring failure pattern."""
+    command_family: str
+    scope: str
+    exit_code: int | None
+    count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "command_family": self.command_family,
+            "scope": self.scope,
+            "exit_code": self.exit_code,
+            "count": self.count,
+        }
 
 _GENERIC_CHECKS = [
     "Run focused tests for the changed scope",
@@ -205,9 +274,16 @@ class PreflightReport:
     dq_caveats: list[str] = field(default_factory=list)
     m2b_readiness_level: str = "unknown"
     notes: dict[str, Any] = field(default_factory=dict)
+    # v0.6 intelligence fields
+    known_failures: list[KnownFailure] = field(default_factory=list)
+    repair_loop_lessons: list[RepairLoopLesson] = field(default_factory=list)
+    hygiene_warnings: list[HygieneWarning] = field(default_factory=list)
+    failure_signatures: list[FailureSignature] = field(default_factory=list)
+    # v0.9
+    open_repair_loops_for_scope: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "schema_version": self.schema_version,
             "source": self.source,
             "filters": self.filters,
@@ -220,20 +296,170 @@ class PreflightReport:
             "dq_caveats": self.dq_caveats,
             "m2b_readiness_level": self.m2b_readiness_level,
             "notes": self.notes,
+            # v0.6
+            "known_failures": [kf.to_dict() for kf in self.known_failures],
+            "repair_loop_lessons": [rl.to_dict() for rl in self.repair_loop_lessons],
+            "hygiene_warnings": [hw.to_dict() for hw in self.hygiene_warnings],
+            "failure_signatures": [fs.to_dict() for fs in self.failure_signatures],
+            "preflight_intelligence_note": (
+                "Historical failure context only. Not M2B scoring, model ranking, "
+                "routing, or statistical proof."
+            ),
         }
+        # Additive: empty-ledger note (v0.8)
+        if not self.known_failures and not self.recent_failures:
+            d["intelligence_note"] = "no_matching_scoped_claims"
+        # Additive: open repair loops for scope (v0.9)
+        d["open_repair_loops_for_scope"] = self.open_repair_loops_for_scope
+        return d
+
+
+def _scope_match_reason(
+    claim_scope_paths: list[str] | None, filter_scopes: list[str]
+) -> str | None:
+    """Return match reason (exact/parent/child) or None if no match.
+
+    Uses path-boundary matching to avoid chimera-memory matching chimera-memory-types.
+    """
+    if not filter_scopes or not claim_scope_paths:
+        return None
+    for fs in filter_scopes:
+        fs_norm = fs.rstrip("/")
+        for sp in claim_scope_paths:
+            sp_norm = str(sp).rstrip("/")
+            if sp_norm == fs_norm:
+                return "exact"
+            # parent: filter scope is parent of claim scope (fs is prefix of sp at boundary)
+            if sp_norm.startswith(fs_norm + "/"):
+                return "parent"
+            # child: claim scope is parent of filter scope
+            if fs_norm.startswith(sp_norm + "/"):
+                return "child"
+    return None
 
 
 def _scope_matches(claim_scope_paths: list[str] | None, filter_scopes: list[str]) -> bool:
-    """True if any filter scope is a prefix of any stored scope path."""
+    """True if any filter scope boundary-matches any stored scope path."""
     if not filter_scopes:
         return True
     if not claim_scope_paths:
         return False
-    for fs in filter_scopes:
-        for sp in claim_scope_paths:
-            if str(sp).startswith(fs) or fs.startswith(str(sp)):
-                return True
-    return False
+    return _scope_match_reason(claim_scope_paths, filter_scopes) is not None
+
+
+def _lesson_text(command: str, effective_failure_origin: str, witness: str | None) -> str:
+    """Return a conservative observed-pattern lesson string."""
+    cmd_lower = command.lower()
+    w = (witness or "").lower()
+
+    if "mypy" in cmd_lower:
+        return (
+            "Observed pattern: type checks failed in this scope before. "
+            "Re-run mypy after changing typed helpers, Optional fields, or report shapes."
+        )
+    if "pytest" in cmd_lower and effective_failure_origin == "invocation_artifact":
+        return (
+            "Observed hygiene issue: pytest -m expressions failed when passed through "
+            "shell variable expansion. Run marker expressions directly."
+        )
+    if "pytest" in cmd_lower:
+        return (
+            "Observed pattern: tests failed in this scope before. "
+            "Re-run the full test suite before closing the task."
+        )
+    if "m2b-readiness" in cmd_lower or "m2b_readiness" in cmd_lower:
+        return (
+            "Observed pattern: m2b-readiness output shape changed before. "
+            "Check dq_cohort_summary, effective_group_summaries, and blocker output after changes."
+        )
+    if "preflight" in cmd_lower:
+        return (
+            "Observed pattern: preflight scope inference and report formatting are "
+            "sensitive to path-boundary matching and optional fields."
+        )
+    if "ruff" in cmd_lower:
+        return (
+            "Observed pattern: ruff lint failed in this scope before. "
+            "Run ruff check after adding new imports or refactoring long lines."
+        )
+    if "doctor" in cmd_lower:
+        return (
+            "Observed pattern: chimera-memory doctor had a count/state issue in this scope. "
+            "Check errata-aware read models after ledger format changes."
+        )
+    if "quoting" in w or "not slow" in w or "invalid argument" in w.lower():
+        return (
+            "Observed hygiene issue: command invocation failed due to argument quoting or "
+            "missing dependencies. Check tool availability and invocation syntax."
+        )
+    return (
+        "Observed pattern: this command failed in this scope before. "
+        "Re-run the recommended checks before closing the task."
+    )
+
+
+def _repair_status(
+    failure_claim_id: str,
+    repair_loop_id: str | None,
+    errata_applied: bool,
+    all_claims_by_loop: dict[str, list[Any]],
+) -> str:
+    """Determine repair status for a failure claim."""
+    if errata_applied:
+        return "classified_errata"
+    if not repair_loop_id:
+        return "open"
+    loop_claims = all_claims_by_loop.get(repair_loop_id, [])
+    for c in loop_claims:
+        m = c.metadata or {}
+        ph = str(m.get("repair_phase") or "")
+        from chimera_memory_types.knowledge import ClaimStatus
+        if c.claim_status == ClaimStatus.VALIDATED:
+            if ph == "same_scope_after_fix":
+                return "fixed_same_scope"
+            if ph in ("regression_check", "baseline"):
+                return "later_regression_validated"
+    return "open"
+
+
+def _compute_open_loops_for_scope(store: MemoryStore, filter_scopes: list[str]) -> list[str]:
+    """Return repair_loop_ids that are open and whose scope matches filter_scopes."""
+    from chimera_memory.data_quality import K_REPAIR_LOOP_ID, K_REPAIR_PHASE, K_SCOPE_PATHS
+    from chimera_memory.query import latest_claims_from_records
+    from chimera_memory_types.knowledge import ClaimStatus
+
+    if not filter_scopes:
+        return []
+    raw = store.read_claims()
+    settled = [c for c in latest_claims_from_records(raw) if c.claim_status is not None]
+
+    loop_has_contradiction: dict[str, bool] = {}
+    loop_has_ssaf: dict[str, bool] = {}
+    loop_scope_paths: dict[str, list[str]] = {}
+
+    for c in settled:
+        m = c.metadata or {}
+        rl = m.get(K_REPAIR_LOOP_ID)
+        if not rl:
+            continue
+        rl = str(rl)
+        ph = str(m.get(K_REPAIR_PHASE) or "none")
+        sp = m.get(K_SCOPE_PATHS)
+        if sp and isinstance(sp, list) and rl not in loop_scope_paths:
+            loop_scope_paths[rl] = [str(s) for s in sp]
+        if ph in ("baseline", "repair_attempt") and c.claim_status == ClaimStatus.CONTRADICTED:
+            loop_has_contradiction[rl] = True
+        elif ph == "same_scope_after_fix" and c.claim_status == ClaimStatus.VALIDATED:
+            loop_has_ssaf[rl] = True
+
+    open_ids = []
+    for rl in loop_has_contradiction:
+        if not loop_has_ssaf.get(rl):
+            # Check scope match
+            sp = loop_scope_paths.get(rl)
+            if _scope_match_reason(sp, filter_scopes) is not None:
+                open_ids.append(rl)
+    return sorted(open_ids)
 
 
 def build_preflight(
@@ -324,10 +550,12 @@ def build_preflight(
             if (c.metadata or {}).get("verification_scope") == verification_scope
         ]
 
-    # Recent failures (CONTRADICTED, effective origin not invocation_artifact)
+    # Recent failures (CONTRADICTED, exclude fixture/synthetic origins)
+    _RECENT_EXCLUDED = {"test_first_contract", "synthetic", None}
     failures = [
         c for c in candidates
         if c.claim_status == ClaimStatus.CONTRADICTED
+        and effective_failure_origin(c, errata_map) not in _RECENT_EXCLUDED
     ]
     failure_dicts = []
     for c in failures[-limit:]:
@@ -395,6 +623,138 @@ def build_preflight(
     except Exception:
         m2b_level = "unknown"
 
+    # ── v0.6: Build intelligence structures ──────────────────────────────────
+
+    # Index all scope-matching claims by repair_loop_id for repair status lookup
+    all_by_loop: dict[str, list[Any]] = {}
+    for c in candidates:
+        rl = (c.metadata or {}).get("repair_loop_id")
+        if rl:
+            all_by_loop.setdefault(str(rl), []).append(c)
+
+    # known_failures: organic_real + controlled_real, max 10 most recent
+    _PRODUCT_ORIGINS = {"organic_real", "controlled_real"}
+    _HYGIENE_ORIGINS = {"invocation_artifact"}
+    _EXCLUDED_ORIGINS = {"test_first_contract", "synthetic", None}
+
+    scope_failures_all = [
+        c for c in candidates
+        if c.claim_status == ClaimStatus.CONTRADICTED
+    ]
+
+    known_failures: list[KnownFailure] = []
+    hygiene_raw: list[tuple[str, str, str]] = []  # (pattern, claim_id, cmd)
+
+    for c in reversed(scope_failures_all[-50:]):  # most recent first, bounded
+        m = c.metadata or {}
+        eff_fo = effective_failure_origin(c, errata_map)
+        if eff_fo in _EXCLUDED_ORIGINS:
+            continue
+        intel_evt: dict[str, Any] = {}
+        if c.settlement and c.settlement.events:
+            intel_evt = c.settlement.events[-1].metadata or {}
+        wrapped = intel_evt.get("wrapped_args") or []
+        cmd = redact(" ".join(str(a) for a in wrapped)) if wrapped else c.title
+        witness = intel_evt.get("stderr_excerpt") or intel_evt.get("stdout_excerpt") or ""
+        witness_r = redact(str(witness).strip()[:120]) if witness else None
+        sp = list(m.get("scope_paths") or [])
+        match_reason = _scope_match_reason(sp or None, scopes) or "parent"
+
+        if eff_fo in _PRODUCT_ORIGINS and len(known_failures) < 10:
+            errata_applied = eff_fo != m.get("failure_origin")
+            status = _repair_status(
+                c.claim_id, m.get("repair_loop_id"), errata_applied, all_by_loop
+            )
+            known_failures.append(KnownFailure(
+                claim_id=c.claim_id[:12],
+                command=cmd[:80],
+                scope_paths=sp,
+                effective_failure_origin=str(eff_fo),
+                repair_loop_id=m.get("repair_loop_id"),
+                repair_status=status,
+                lesson=_lesson_text(cmd, str(eff_fo), witness_r),
+                witness_excerpt=witness_r,
+                scope_match_reason=match_reason,
+            ))
+        elif eff_fo in _HYGIENE_ORIGINS:
+            # group by command family for hygiene summary
+            fam = cmd.split()[0] if cmd.split() else "unknown"
+            hygiene_raw.append((fam, c.claim_id[:12], cmd[:60]))
+
+    # hygiene_warnings: group by command family, max 5
+    hygiene_groups: dict[str, list[tuple[str, str]]] = {}
+    for fam, cid, cmd in hygiene_raw:
+        hygiene_groups.setdefault(fam, []).append((cid, cmd))
+    hygiene_warnings: list[HygieneWarning] = []
+    for fam, items in list(hygiene_groups.items())[:5]:
+        hygiene_warnings.append(HygieneWarning(
+            pattern=fam,
+            count=len(items),
+            lesson=(
+                "Observed hygiene issue: this command family failed due to "
+                "invocation setup problems (quoting, missing tool, wrong path). "
+                "Not a product defect — check tool availability and invocation syntax."
+            ),
+            example_claim_id=items[0][0],
+        ))
+
+    # repair_loop_lessons: from loops with scope-matching claims, max 5
+    loop_lessons: list[RepairLoopLesson] = []
+    for lid, loop_claims in sorted(all_by_loop.items()):
+        base = sum(
+            1 for c in loop_claims
+            if c.claim_status == ClaimStatus.CONTRADICTED
+            and str((c.metadata or {}).get("repair_phase") or "") in (
+                "baseline", "repair_attempt"
+            )
+        )
+        fix_v = sum(
+            1 for c in loop_claims
+            if c.claim_status == ClaimStatus.VALIDATED
+            and str((c.metadata or {}).get("repair_phase") or "") in (
+                "same_scope_after_fix", "regression_check"
+            )
+        )
+        if base == 0 and fix_v == 0:
+            continue
+        if fix_v >= 1 and base >= 1:
+            status = "fixed"
+            lesson = (
+                f"Loop had {base} failure(s) and {fix_v} fix validation(s). "
+                f"Review the loop's repair phases for patterns."
+            )
+        elif fix_v >= 1:
+            status = "has_validations"
+            lesson = f"Loop has {fix_v} validation(s) with no recorded baseline failure."
+        else:
+            status = "open"
+            lesson = f"Loop has {base} baseline failure(s) with no fix validation yet."
+        loop_lessons.append(RepairLoopLesson(
+            repair_loop_id=lid,
+            baseline_failures=base,
+            fix_validations=fix_v,
+            status=status,
+            lesson=lesson,
+        ))
+    # sort: fixed first
+    loop_lessons.sort(key=lambda ln: (0 if ln.status == "fixed" else 1, ln.repair_loop_id))
+    loop_lessons = loop_lessons[:5]
+
+    # failure_signatures: group scope-matching product failures by (family, scope, exit_code)
+    sig_groups: dict[tuple[str, str, int | None], int] = {}
+    for kf in known_failures:
+        fam = kf.command.split()[0] if kf.command.split() else "unknown"
+        sc = kf.scope_paths[0] if kf.scope_paths else "unknown"
+        # exit_code not in known_failures — use None
+        key = (fam, sc, None)
+        sig_groups[key] = sig_groups.get(key, 0) + 1
+    failure_signatures = [
+        FailureSignature(
+            command_family=k[0], scope=k[1], exit_code=k[2], count=v
+        )
+        for k, v in sorted(sig_groups.items(), key=lambda x: -x[1])
+    ][:10]
+
     return PreflightReport(
         source=source,
         filters=filters,
@@ -411,6 +771,11 @@ def build_preflight(
             "not_m2b": "M2B drift scoring is not built. Descriptive evidence retrieval only.",
             "advisory": "Review evidence and recommended checks before starting work.",
         },
+        known_failures=known_failures,
+        repair_loop_lessons=loop_lessons,
+        hygiene_warnings=hygiene_warnings,
+        failure_signatures=failure_signatures,
+        open_repair_loops_for_scope=_compute_open_loops_for_scope(store, scopes),
     )
 
 
@@ -462,6 +827,31 @@ def format_preflight_text(report: PreflightReport) -> str:
         lines.append("Recent failures: none matching scope")
         lines.append("")
 
+    # Empty-ledger guidance: when no intelligence is available for this scope
+    _has_intelligence = (
+        bool(report.known_failures)
+        or bool(report.recent_failures)
+        or bool(report.repair_loop_lessons)
+    )
+    if not _has_intelligence:
+        scope_hint = (
+            report.inferred_scope_paths[0]
+            if report.inferred_scope_paths
+            else "<your-package>"
+        )
+        lines.append("No historical failures for this scope yet.")
+        lines.append("To build preflight intelligence, run a scoped dogfood session:")
+        lines.append(f"  chimera-memory template dogfood --scope-path {scope_hint}")
+        lines.append("")
+
+    # v0.9: open repair loops for this scope
+    if report.open_repair_loops_for_scope:
+        lines.append("Open repair loops for this scope:")
+        for lid in report.open_repair_loops_for_scope:
+            lines.append(f"  - {lid}: same_scope_after_fix missing")
+        lines.append("Run: chimera-memory repair-loops for the exact wrap command template.")
+        lines.append("")
+
     if report.repair_loops:
         lines.append(f"Repair loops ({len(report.repair_loops)}):")
         for rl in report.repair_loops:
@@ -472,6 +862,38 @@ def format_preflight_text(report: PreflightReport) -> str:
             )
         lines.append("")
 
+    # v0.6: intelligence sections
+    if report.known_failures:
+        lines.append(f"─── Historical failures ({len(report.known_failures)}) ───────────────")
+        for kf in report.known_failures:
+            _sym_map = {
+                "fixed_same_scope": "✓ fixed", "later_regression_validated": "✓ validated",
+                "classified_errata": "~ classified", "open": "○ open",
+            }
+            status_sym = _sym_map.get(kf.repair_status, kf.repair_status)
+            lines.append(f"  [{status_sym}] {kf.command[:70]}")
+            if kf.repair_loop_id:
+                lines.append(f"    loop: {kf.repair_loop_id}")
+            lines.append(f"    {kf.lesson}")
+        lines.append("")
+
+    if report.repair_loop_lessons:
+        fixed = [ln for ln in report.repair_loop_lessons if ln.status == "fixed"]
+        if fixed:
+            lines.append("─── Repair-loop lessons ────────────────────────────────")
+            for ln in fixed:
+                lines.append(f"  {ln.repair_loop_id}: {ln.lesson}")
+            lines.append("")
+
+    if report.hygiene_warnings:
+        lines.append("─── Hygiene warnings (invocation_artifact — not product defects) ───")
+        for hw in report.hygiene_warnings:
+            lines.append(f"  {hw.pattern} ({hw.count}×): {hw.lesson}")
+        lines.append("")
+
+    lines.append("Historical failure context only — not M2B scoring, model ranking, "
+                 "routing, or statistical proof.")
+    lines.append("")
     lines.append("Recommended verification:")
     for chk in report.recommended_checks:
         lines.append(f"  {chk}")

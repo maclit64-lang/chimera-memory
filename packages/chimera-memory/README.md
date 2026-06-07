@@ -10,7 +10,7 @@ Records what an agent tried, which command verified it, what happened, and what 
 pip install chimera-memory
 ```
 
-Requires Python 3.10+. Installs `chimera-memory-types`, `pydantic`, and `filelock` automatically.
+Requires Python 3.12+. Installs `chimera-memory-types`, `pydantic`, and `filelock` automatically.
 
 ## Quickstart (5 commands)
 
@@ -29,6 +29,7 @@ chimera-memory session start \
 # 3. Wrap a verification command (test, lint, typecheck, …)
 chimera-memory wrap \
   --failure-origin organic_real \
+  --scope-path . \
   --verification-scope package \
   -- pytest tests/ -q
 
@@ -38,6 +39,26 @@ chimera-memory session end --status PASSED
 # 5. View the receipt
 chimera-memory receipt latest
 ```
+
+## Onboard an agent in 90 seconds
+
+Get the full session/wrap/repair-loop protocol for your agent:
+
+```bash
+chimera-memory agent-guide --agent generic   # or: kiro, codex
+```
+
+Generate a copy-paste session scaffold for your package:
+
+```bash
+chimera-memory template dogfood --scope-path packages/chimera-memory
+```
+
+Prompt templates for sustained use are in `docs/prompts/` in the [source repo](https://github.com/maclit64-lang/chimera-memory):
+
+- `kiro-dogfood.md` — Kiro agent session discipline
+- `generic-agent-dogfood.md` — Any agent
+- `release-closeout.md` — Release closeout checklist
 
 ## Health check
 
@@ -55,15 +76,40 @@ chimera-memory doctor --json
 
 Exit code: `0` = healthy, `1` = warnings (e.g. no active session), `2` = critical (e.g. not initialized).
 
-## Preflight check
+## Is my ledger healthy?
 
-Before starting work, run a preflight advisory:
+`doctor` also audits whether the ledger is being used correctly:
+
+```bash
+chimera-memory doctor        # shows Evidence Hygiene section
+chimera-memory doctor --json # machine-readable, includes evidence_hygiene + next_actions
+```
+
+Evidence hygiene checks:
+- Scoped claim ratio (claims with `--scope-path` set)
+- Unknown `failure_origin` count (claims missing classification)
+- Repair-loop completeness (loops with `same_scope_after_fix`)
+- Orphaned repair phases (`--repair-phase` without `--repair-loop-id`)
+- Test/synthetic and invocation-artifact claim counts
+
+If issues are found, `doctor` prints actionable next steps.
+
+## Preflight Intelligence (v0.6)
+
+Before starting work, surface historical failures, repair-loop lessons, and hygiene warnings:
 
 ```bash
 chimera-memory preflight --from-git
+chimera-memory preflight --scope-path packages/chimera-memory
 ```
 
-Shows M2B readiness level, scope summary, and any advisory warnings. Output is advisory only — no routing, no gating.
+Shows:
+- Historical failures in the relevant scope (organic_real + controlled_real)
+- Repair-loop lessons (what failed, was it fixed?)
+- Hygiene warnings (invocation_artifact issues — not product defects)
+- Recommended verification commands
+
+Not M2B scoring or model ranking. Advisory only.
 
 ## CI receipt bundle
 
@@ -87,7 +133,7 @@ chimera-memory evidence bundle --output-dir ./evidence
 chimera-memory evidence import ./evidence --dry-run --json
 ```
 
-Write-import is not available in 0.1.x. Dry-run only.
+Write-import is not available. Dry-run only.
 
 ## M2B readiness
 
@@ -96,6 +142,8 @@ chimera-memory m2b-readiness
 ```
 
 Shows whether the local ledger has accumulated sufficient repair-loop evidence to consider M2B (model-to-baseline) comparison. This is a local readiness gate, not a scoring system.
+
+Run `chimera-memory m2b-readiness --explain` to see what evidence is missing before scoring can be trusted.
 
 ## What is not built
 
