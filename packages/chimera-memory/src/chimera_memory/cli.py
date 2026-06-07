@@ -513,6 +513,11 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Initialise a local .chimera-memory/ store")
     init_parser.set_defaults(command="init")
 
+    quickstart_parser = subparsers.add_parser(
+        "quickstart", help="Show a guided first-run example (no writes)"
+    )
+    quickstart_parser.set_defaults(command="quickstart")
+
     for command in ("record", "settle"):
         p = subparsers.add_parser(command, help=argparse.SUPPRESS)
         p.set_defaults(command=command)
@@ -1013,7 +1018,16 @@ def main(argv: list[str] | None = None) -> int:
         store.initialize()
         print(store.memory_dir)
         _ensure_gitignore(Path.cwd())
+        print("\nNext steps:")
+        print("  chimera-memory wrap --scope-path . "
+              "--failure-origin organic_real "
+              "--verification-scope package -- <your-command>")
+        print("  chimera-memory verify")
+        print("  chimera-memory doctor")
+        print("\nRun 'chimera-memory quickstart' for a full guided example.")
         return 0
+    if parsed.command == "quickstart":
+        return _quickstart(parsed)
     if parsed.command == "wrap":
         return _wrap_pytest(parsed)
     if parsed.command == "status":
@@ -2829,4 +2843,53 @@ def _bundle_diff(parsed: argparse.Namespace) -> int:
         print(f"  ⚠ {w}")
     for action in next_actions:
         print(f"  → {action}")
+    return 0
+
+
+def _quickstart(parsed: argparse.Namespace) -> int:
+    """Print a guided first-run example. No writes."""
+    print("""\
+Chimera Memory — First 10 Minutes
+
+1. Initialize the local ledger:
+
+   chimera-memory init
+
+2. Wrap a verification command:
+
+   chimera-memory wrap \\
+     --scope-path . \\
+     --failure-origin organic_real \\
+     --verification-scope package \\
+     -- pytest tests/ -q
+
+3. Check ledger integrity:
+
+   chimera-memory verify
+
+4. View your session receipt:
+
+   chimera-memory doctor
+
+5. Create a portable receipt bundle:
+
+   chimera-memory receipt bundle \\
+     --output-dir ./receipt \\
+     --include-preflight \\
+     --scope-path .
+
+6. Inspect the bundle before sharing:
+
+   chimera-memory bundle inspect ./receipt
+
+7. Compare two bundles (optional):
+
+   chimera-memory bundle diff ./old-receipt ./new-receipt
+
+Notes:
+  - All data stays on your machine.
+  - M2B scoring, model ranking, and routing are not built.
+  - Run 'chimera-memory doctor' for a health check at any point.
+  - Run 'chimera-memory agent-guide --agent generic' for agent protocol.\
+""")
     return 0
