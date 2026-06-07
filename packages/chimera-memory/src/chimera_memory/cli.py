@@ -2130,6 +2130,54 @@ def _receipt_bundle(parsed: argparse.Namespace) -> int:
         pass
 
     files = sorted(p.name for p in out_dir.iterdir() if not p.name.startswith("."))
+
+    # Generate README explaining bundle contents
+    readme_lines = [
+        "# Chimera Memory Receipt Bundle",
+        "",
+        "Session receipt and verification artifacts for sharing or CI upload.",
+        "",
+        "## Contents",
+        "",
+    ]
+    file_descriptions: dict[str, str] = {
+        "README.md": "This file — explains bundle contents and safety",
+        "receipt.md": "Human-readable session receipt",
+        "receipt.json": "Machine-readable session receipt",
+        "github-summary.md": "GitHub-flavored markdown summary for PR comments or CI",
+        "status.json": "Dogfood reliability status snapshot",
+        "reliability.json": "Reliability segment summary",
+        "failures.json": "List of CONTRADICTED claims (failures) in this session",
+        "verify.json": "Integrity verification result",
+        "preflight.md": "Preflight advisory in markdown",
+        "preflight.json": "Preflight advisory in JSON",
+    }
+    for f in files:
+        desc = file_descriptions.get(f, "Additional artifact")
+        readme_lines.append(f"- `{f}` — {desc}")
+    readme_lines += [
+        "",
+        "## Safety",
+        "",
+        "- This bundle does NOT contain raw `.chimera-memory/` ledger files.",
+        "- Command arguments and witness output are redacted.",
+        "- No tokens, API keys, or private file paths should appear.",
+        "- If you find a private path or secret in this bundle, please report it.",
+        "",
+        "## Not included",
+        "",
+        "- `claims.jsonl` / `sessions.jsonl` / `integrity.jsonl` (raw ledger)",
+        "- `index.sqlite` / `append_state.json` (derived caches)",
+        "- `.chimera-memory/` directory",
+        "",
+        "## Note",
+        "",
+        "This is a local receipt — not hosted/cloud. Data stays on your machine",
+        "unless you explicitly share this bundle.",
+    ]
+    _write("README.md", "\n".join(readme_lines) + "\n")
+
+    files = sorted(p.name for p in out_dir.iterdir() if not p.name.startswith("."))
     print(f"Bundle written to {out_dir}/ ({len(files)} files): {', '.join(files)}")
     return 0
 
