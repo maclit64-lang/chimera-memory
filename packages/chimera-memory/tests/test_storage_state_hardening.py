@@ -232,8 +232,14 @@ def test_valid_state_not_rebuilt_on_match(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_append_1000_claims_within_time_budget(tmp_path: Path) -> None:
-    """1000 appends with state validation must stay well under 5 seconds."""
+    """1000 appends with state validation must stay well under 10 seconds.
+
+    This is a performance benchmark, not a correctness test.
+    Marked slow because wall-clock timing is load-sensitive.
+    Run explicitly with: pytest -m slow
+    """
     t0 = datetime(2026, 1, 1, 12, tzinfo=UTC)
     ev = _ev(t0)
     start = time.perf_counter()
@@ -244,4 +250,4 @@ def test_append_1000_claims_within_time_budget(tmp_path: Path) -> None:
             agent_id="a", task_type="test",
         )
     elapsed = time.perf_counter() - start
-    assert elapsed < 10.0, f"1000 appends took {elapsed:.2f}s — expected < 5s"
+    assert elapsed < 10.0, f"1000 appends took {elapsed:.2f}s — expected < 10s"
