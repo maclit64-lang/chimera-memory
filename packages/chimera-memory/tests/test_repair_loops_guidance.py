@@ -178,6 +178,8 @@ def test_repair_loops_json_open_loops(tmp_path, monkeypatch, capsys):
     d = json.loads(out)
     assert len(d["open_loops"]) == 1
     assert d["open_loops"][0]["repair_loop_id"] == "loop-j"
+    assert d["open_loops"][0]["status"] == "open"
+    assert d["open_loops"][0]["missing_phase"] == "same_scope_after_fix"
 
 
 def test_repair_loops_json_complete_loops(tmp_path, monkeypatch, capsys):
@@ -191,6 +193,8 @@ def test_repair_loops_json_complete_loops(tmp_path, monkeypatch, capsys):
     d = json.loads(capsys.readouterr().out)
     assert len(d["complete_loops"]) == 1
     assert d["complete_loops"][0]["repair_loop_id"] == "loop-cj"
+    assert d["complete_loops"][0]["status"] == "complete"
+    assert d["complete_loops"][0]["missing_phase"] is None
 
 
 def test_repair_loops_json_malformed_loops(tmp_path, monkeypatch, capsys):
@@ -201,6 +205,8 @@ def test_repair_loops_json_malformed_loops(tmp_path, monkeypatch, capsys):
     main(["repair-loops", "--json"])
     d = json.loads(capsys.readouterr().out)
     assert len(d["malformed_loops"]) == 1
+    assert d["malformed_loops"][0]["status"] == "malformed"
+    assert d["malformed_loops"][0]["missing_phase"] == "baseline"
 
 
 def test_repair_loops_json_next_actions(tmp_path, monkeypatch, capsys):

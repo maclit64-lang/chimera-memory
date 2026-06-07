@@ -37,6 +37,8 @@
 | `baseline_count` | `int` | all |
 | `same_scope_after_fix_count` | `int` | all |
 | `regression_check_count` | `int` | all |
+| `status` | `string` | all (`"open"`, `"complete"`, or `"malformed"`) |
+| `missing_phase` | `string\|null` | all (`"same_scope_after_fix"` for open, `"baseline"` for malformed, `null` for complete) |
 | `next_action` | `string\|null` | open only (null for complete/malformed) |
 | `reason` | `string\|null` | malformed only |
 
@@ -56,6 +58,8 @@ New fields may be added to loop objects at any time. Consumers must tolerate unk
       "baseline_count": 1,
       "same_scope_after_fix_count": 0,
       "regression_check_count": 0,
+      "status": "open",
+      "missing_phase": "same_scope_after_fix",
       "next_action": "chimera-memory wrap \\\n    --failure-origin organic_real \\\n    --scope-path packages/chimera-memory \\\n    --verification-scope package \\\n    --repair-loop-id v060-fixture-loop-2 \\\n    --repair-phase same_scope_after_fix \\\n    -- <same check that failed>"
     }
   ],
@@ -66,6 +70,8 @@ New fields may be added to loop objects at any time. Consumers must tolerate unk
       "baseline_count": 1,
       "same_scope_after_fix_count": 1,
       "regression_check_count": 3,
+      "status": "complete",
+      "missing_phase": null,
       "next_action": null
     }
   ],

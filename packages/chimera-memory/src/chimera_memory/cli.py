@@ -1260,17 +1260,31 @@ def _analyze_repair_loops(store: MemoryStore) -> dict[str, Any]:
         if ssaf_validated > 0 and baseline_contradicted == 0:
             malformed_loops.append({
                 **base,
+                "status": "malformed",
+                "missing_phase": "baseline",
                 "reason": "same_scope_after_fix exists but no CONTRADICTED baseline",
                 "next_action": None,
             })
         elif baseline_contradicted > 0 and ssaf_validated > 0:
-            complete_loops.append({**base, "next_action": None})
+            complete_loops.append({
+                **base,
+                "status": "complete",
+                "missing_phase": None,
+                "next_action": None,
+            })
         elif baseline_contradicted > 0:
-            open_loops.append({**base, "next_action": next_action})
+            open_loops.append({
+                **base,
+                "status": "open",
+                "missing_phase": "same_scope_after_fix",
+                "next_action": next_action,
+            })
         elif ssaf_validated == 0 and baseline_contradicted == 0 and regression_count == 0:
             # Loop exists but has no recognizable phase claims — malformed
             malformed_loops.append({
                 **base,
+                "status": "malformed",
+                "missing_phase": "baseline",
                 "reason": "no CONTRADICTED baseline or VALIDATED same_scope_after_fix",
                 "next_action": None,
             })
