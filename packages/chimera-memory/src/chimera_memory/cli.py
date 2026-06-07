@@ -1263,13 +1263,14 @@ def _analyze_repair_loops(store: MemoryStore) -> dict[str, Any]:
             complete_loops.append({**base, "next_action": None})
         elif baseline_contradicted > 0:
             open_loops.append({**base, "next_action": next_action})
-        else:
-            # Loop exists but only has regression_check or other phases — malformed
+        elif ssaf_validated == 0 and baseline_contradicted == 0 and regression_count == 0:
+            # Loop exists but has no recognizable phase claims — malformed
             malformed_loops.append({
                 **base,
                 "reason": "no CONTRADICTED baseline or VALIDATED same_scope_after_fix",
                 "next_action": None,
             })
+        # else: regression_check-only loop (clean DQ session, no real bug) — skip
 
     next_actions = [
         f"Complete repair loop {lp['repair_loop_id']}"
