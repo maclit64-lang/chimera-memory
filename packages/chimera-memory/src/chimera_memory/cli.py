@@ -167,7 +167,8 @@ def _build_next_actions(hygiene: dict[str, Any]) -> list[str]:
         )
     for lid in open_ids[:3]:
         actions.append(
-            f"Complete repair loop {lid} with --repair-phase same_scope_after_fix."
+            f"Complete repair loop {lid} with --repair-phase same_scope_after_fix.\n"
+            f"  Run: chimera-memory repair-loops for the exact wrap command template."
         )
     if rp_no_loop > 0:
         actions.append(
@@ -1176,68 +1177,192 @@ def _errata(parsed: argparse.Namespace) -> int:
     return 2
 
 
-def _repair_loops(parsed: argparse.Namespace) -> int:
-    """Group clean claims by repair_loop_id. Explicit metadata only, no inference."""
-    from chimera_memory.query import build_claim_read_model
+def _analyze_repair_loops(store: MemoryStore) -> dict[str, Any]:
+    """Classify all repair loops into open, complete, and malformed.
+
+    Uses all settled claims (not just clean) for broader coverage.
+    Classification:
+      complete  = has CONTRADICTED baseline/repair_attempt + later VALIDATED SSAF
+      open      = has CONTRADICTED baseline/repair_attempt but no VALIDATED SSAF
+      malformed = has VALIDATED SSAF but no CONTRADICTED baseline/repair_attempt
+    regression_check does NOT count as fixed_same_scope / does not close a loop.
+    """
+    from chimera_memory.data_quality import K_REPAIR_LOOP_ID, K_REPAIR_PHASE, K_SCOPE_PATHS
+    from chimera_memory.query import latest_claims_from_records
     from chimera_memory_types.knowledge import ClaimStatus
 
-    store = MemoryStore.from_paths(root=Path.cwd())
-    rm = build_claim_read_model(store)
+    raw = store.read_claims()
+    settled = [c for c in latest_claims_from_records(raw) if c.claim_status is not None]
 
-    loops: dict[str, list[Any]] = {}
-    for c in rm.clean_claims:
+    # Group settled claims by repair_loop_id
+    groups: dict[str, list[Any]] = {}
+    for c in settled:
         m = c.metadata or {}
-        rl = m.get("repair_loop_id")
+        rl = m.get(K_REPAIR_LOOP_ID)
         if rl:
-            loops.setdefault(str(rl), []).append(c)
+            groups.setdefault(str(rl), []).append(c)
 
-    if not loops:
-        if parsed.json:
-            print(json.dumps({"repair_loops": [], "count": 0}, sort_keys=True))
+    open_loops: list[dict[str, Any]] = []
+    complete_loops: list[dict[str, Any]] = []
+    malformed_loops: list[dict[str, Any]] = []
+
+    for loop_id, claims in sorted(groups.items()):
+        # Collect phase/status data
+        baseline_contradicted = 0
+        ssaf_validated = 0
+        regression_count = 0
+        scope_paths: list[str] = []
+        baseline_commands: list[str] = []
+
+        for c in claims:
+            m = c.metadata or {}
+            ph = str(m.get(K_REPAIR_PHASE) or "none")
+            sp = m.get(K_SCOPE_PATHS)
+            if sp and isinstance(sp, list) and not scope_paths:
+                scope_paths = [str(s) for s in sp]
+
+            if ph in ("baseline", "repair_attempt") and c.claim_status == ClaimStatus.CONTRADICTED:
+                baseline_contradicted += 1
+                cmd = str(c.title or "").replace("will pass", "").strip()
+                if len(baseline_commands) < 3 and cmd:
+                    baseline_commands.append(cmd)
+            elif ph == "same_scope_after_fix" and c.claim_status == ClaimStatus.VALIDATED:
+                ssaf_validated += 1
+            elif ph == "regression_check":
+                regression_count += 1
+
+        scope_str = scope_paths[0] if scope_paths else "<your-scope>"
+        # Build next_action template
+        cmd_hint = baseline_commands[0] if baseline_commands else "<same check that failed>"
+        next_action = (
+            f"chimera-memory wrap \\\n"
+            f"    --failure-origin organic_real \\\n"
+            f"    --scope-path {scope_str} \\\n"
+            f"    --verification-scope package \\\n"
+            f"    --repair-loop-id {loop_id} \\\n"
+            f"    --repair-phase same_scope_after_fix \\\n"
+            f"    -- {cmd_hint}"
+        )
+
+        base = {
+            "repair_loop_id": loop_id,
+            "scope_paths": scope_paths,
+            "baseline_count": baseline_contradicted,
+            "same_scope_after_fix_count": ssaf_validated,
+            "regression_check_count": regression_count,
+            "baseline_commands": baseline_commands,
+        }
+
+        if ssaf_validated > 0 and baseline_contradicted == 0:
+            malformed_loops.append({
+                **base,
+                "reason": "same_scope_after_fix exists but no CONTRADICTED baseline",
+                "next_action": None,
+            })
+        elif baseline_contradicted > 0 and ssaf_validated > 0:
+            complete_loops.append({**base, "next_action": None})
+        elif baseline_contradicted > 0:
+            open_loops.append({**base, "next_action": next_action})
         else:
-            print(
+            # Loop exists but only has regression_check or other phases — malformed
+            malformed_loops.append({
+                **base,
+                "reason": "no CONTRADICTED baseline or VALIDATED same_scope_after_fix",
+                "next_action": None,
+            })
+
+    next_actions = [
+        f"Complete repair loop {lp['repair_loop_id']}"
+        + (f" (scope: {lp['scope_paths'][0]})" if lp['scope_paths'] else "")
+        + " with --repair-phase same_scope_after_fix.\n"
+        + "  Run: chimera-memory repair-loops for the exact wrap command template."
+        for lp in open_loops
+    ]
+
+    return {
+        "open_loops": open_loops,
+        "complete_loops": complete_loops,
+        "malformed_loops": malformed_loops,
+        "next_actions": next_actions,
+    }
+
+
+def _repair_loops(parsed: argparse.Namespace) -> int:
+    """Show repair loop status: open, complete, malformed."""
+    store = MemoryStore.from_paths(root=Path.cwd())
+    data = _analyze_repair_loops(store)
+    open_loops = data["open_loops"]
+    complete_loops = data["complete_loops"]
+    malformed_loops = data["malformed_loops"]
+    next_actions = data["next_actions"]
+
+    if parsed.json:
+        payload = {
+            "schema_version": 1,
+            "open_loops": [
+                {k: v for k, v in lp.items() if k != "baseline_commands"}
+                for lp in open_loops
+            ],
+            "complete_loops": [
+                {k: v for k, v in lp.items() if k != "baseline_commands"}
+                for lp in complete_loops
+            ],
+            "malformed_loops": [
+                {k: v for k, v in lp.items() if k != "baseline_commands"}
+                for lp in malformed_loops
+            ],
+            "next_actions": next_actions,
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+
+    if not open_loops and not complete_loops and not malformed_loops:
+        print(
             "No repair loops found.\n"
             "Tag claims with --repair-loop-id and --repair-phase when running:\n"
             "  chimera-memory wrap --repair-loop-id my-fix --repair-phase baseline -- pytest ..."
         )
         return 0
 
-    result = []
-    for loop_id, claims in sorted(loops.items()):
-        phases: dict[str, int] = {}
-        validated = contradicted = 0
-        for c in claims:
-            m = c.metadata or {}
-            ph = str(m.get("repair_phase") or "none")
-            phases[ph] = phases.get(ph, 0) + 1
-            if c.claim_status == ClaimStatus.VALIDATED:
-                validated += 1
-            elif c.claim_status == ClaimStatus.CONTRADICTED:
-                contradicted += 1
-        statuses = {c.claim_status.value for c in claims if c.claim_status}
-        latest = "validated" if "validated" in statuses and "contradicted" not in statuses \
-            else "contradicted" if "contradicted" in statuses else "unknown"
-        result.append({
-            "repair_loop_id": loop_id,
-            "total_claims": len(claims),
-            "phase_counts": phases,
-            "validated": validated,
-            "contradicted": contradicted,
-            "latest_status": latest,
-        })
+    print("Chimera Memory Repair Loops\n")
 
-    if parsed.json:
-        print(json.dumps({"repair_loops": result, "count": len(result)}, sort_keys=True))
-        return 0
+    print(f"Open ({len(open_loops)}):")
+    if open_loops:
+        for lp in open_loops:
+            scope = lp["scope_paths"][0] if lp["scope_paths"] else "<unknown>"
+            print(f"  {lp['repair_loop_id']}")
+            print(f"    scope:    {scope}")
+            print(f"    baseline: {lp['baseline_count']} CONTRADICTED claim(s)")
+            print("    SSAF:     missing")
+            if lp.get("next_action"):
+                print("    to close:")
+                for line in str(lp["next_action"]).splitlines():
+                    print(f"      {line}")
+    else:
+        print("  (none)")
 
-    print(f"Chimera Memory Repair Loops\n\n{len(result)} loop(s)\n")
-    for r in result:
-        print(f"  loop:        {r['repair_loop_id']}")
-        print(f"  claims:      {r['total_claims']}")
-        print(f"  phases:      {r['phase_counts']}")
-        print(f"  validated:   {r['validated']}  contradicted: {r['contradicted']}")
-        print(f"  latest:      {r['latest_status']}\n")
-    print("Note: repair loop grouping is explicit metadata only. No automatic inference.")
+    print(f"\nComplete ({len(complete_loops)}):")
+    if complete_loops:
+        for lp in complete_loops:
+            print(f"  {lp['repair_loop_id']}")
+            print(f"    baseline: {lp['baseline_count']} \u2192 SSAF: "
+                  f"{lp['same_scope_after_fix_count']} \u2192 fixed_same_scope \u2713")
+    else:
+        print("  (none)")
+
+    print(f"\nMalformed ({len(malformed_loops)}):")
+    if malformed_loops:
+        for lp in malformed_loops:
+            print(f"  {lp['repair_loop_id']}")
+            print(f"    reason: {lp.get('reason', 'unknown')}")
+    else:
+        print("  (none)")
+
+    print(
+        "\nNote:\n"
+        "  regression_check does NOT produce fixed_same_scope.\n"
+        "  Only same_scope_after_fix closes a repair loop."
+    )
     return 0
 
 
@@ -2037,8 +2162,34 @@ SESSION PROTOCOL — exact sequence
        --include-preflight \\
        --scope-path <your-scope>
 
-REPAIR-LOOP DISCIPLINE — for real bugs
-───────────────────────────────────────
+REPAIR-LOOP PHASES — exact semantics
+─────────────────────────────────────
+baseline:
+  the real failing run (should be CONTRADICTED)
+
+repair_attempt:
+  optional intermediate attempts during repair
+
+same_scope_after_fix:
+  rerun the SAME check on the SAME scope after the fix
+  → this is what closes the repair loop as fixed_same_scope
+  → CRITICAL: must be same command, same scope, after actual code fix
+
+regression_check:
+  broader or later validation
+  → produces later_regression_validated
+  → does NOT close the loop as fixed_same_scope
+  → does NOT substitute for same_scope_after_fix
+
+none:
+  not part of a repair loop
+
+CRITICAL RULE: regression_check does NOT close a repair loop.
+               Only same_scope_after_fix closes a repair loop.
+
+CRITICAL RULE: Do not manufacture baseline failures to satisfy M2B.
+               Only use repair_loop_id when a real organic_real failure occurs.
+
 When you hit a real organic_real failure and fix it:
 
 Step 1 — baseline (first failing run):
@@ -2162,6 +2313,34 @@ chimera-memory receipt bundle \\
   --output-dir ./receipts \\
   --include-preflight \\
   --scope-path {scope}
+
+# ── REAL BUG REPAIR-LOOP PATTERN ──────────────────────────────────────
+# Use only when a real command fails due to a real code/test/type/lint defect.
+# Do NOT use repair_loop_id for normal passing validation.
+#
+# Step 1 — baseline (the real failing run):
+# chimera-memory wrap \\
+#   --failure-origin organic_real \\
+#   --scope-path {scope} \\
+#   --verification-scope package \\
+#   --repair-loop-id fix-<slug>-<date> \\
+#   --repair-phase baseline \\
+#   -- <failing check>
+#
+# Step 2 — fix the code.
+#
+# Step 3 — same_scope_after_fix (SAME check, SAME scope, after fix):
+# chimera-memory wrap \\
+#   --failure-origin organic_real \\
+#   --scope-path {scope} \\
+#   --verification-scope package \\
+#   --repair-loop-id fix-<slug>-<date> \\
+#   --repair-phase same_scope_after_fix \\
+#   -- <same failing check>
+#
+# NOTE: regression_check does NOT close the loop.
+#       Only same_scope_after_fix produces fixed_same_scope.
+# ──────────────────────────────────────────────────────────────────────
 """
     print(template)
     return 0

@@ -279,6 +279,8 @@ class PreflightReport:
     repair_loop_lessons: list[RepairLoopLesson] = field(default_factory=list)
     hygiene_warnings: list[HygieneWarning] = field(default_factory=list)
     failure_signatures: list[FailureSignature] = field(default_factory=list)
+    # v0.9
+    open_repair_loops_for_scope: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -307,6 +309,8 @@ class PreflightReport:
         # Additive: empty-ledger note (v0.8)
         if not self.known_failures and not self.recent_failures:
             d["intelligence_note"] = "no_matching_scoped_claims"
+        # Additive: open repair loops for scope (v0.9)
+        d["open_repair_loops_for_scope"] = self.open_repair_loops_for_scope
         return d
 
 
@@ -416,6 +420,46 @@ def _repair_status(
             if ph in ("regression_check", "baseline"):
                 return "later_regression_validated"
     return "open"
+
+
+def _compute_open_loops_for_scope(store: MemoryStore, filter_scopes: list[str]) -> list[str]:
+    """Return repair_loop_ids that are open and whose scope matches filter_scopes."""
+    from chimera_memory.data_quality import K_REPAIR_LOOP_ID, K_REPAIR_PHASE, K_SCOPE_PATHS
+    from chimera_memory.query import latest_claims_from_records
+    from chimera_memory_types.knowledge import ClaimStatus
+
+    if not filter_scopes:
+        return []
+    raw = store.read_claims()
+    settled = [c for c in latest_claims_from_records(raw) if c.claim_status is not None]
+
+    loop_has_contradiction: dict[str, bool] = {}
+    loop_has_ssaf: dict[str, bool] = {}
+    loop_scope_paths: dict[str, list[str]] = {}
+
+    for c in settled:
+        m = c.metadata or {}
+        rl = m.get(K_REPAIR_LOOP_ID)
+        if not rl:
+            continue
+        rl = str(rl)
+        ph = str(m.get(K_REPAIR_PHASE) or "none")
+        sp = m.get(K_SCOPE_PATHS)
+        if sp and isinstance(sp, list) and rl not in loop_scope_paths:
+            loop_scope_paths[rl] = [str(s) for s in sp]
+        if ph in ("baseline", "repair_attempt") and c.claim_status == ClaimStatus.CONTRADICTED:
+            loop_has_contradiction[rl] = True
+        elif ph == "same_scope_after_fix" and c.claim_status == ClaimStatus.VALIDATED:
+            loop_has_ssaf[rl] = True
+
+    open_ids = []
+    for rl in loop_has_contradiction:
+        if not loop_has_ssaf.get(rl):
+            # Check scope match
+            sp = loop_scope_paths.get(rl)
+            if _scope_match_reason(sp, filter_scopes) is not None:
+                open_ids.append(rl)
+    return sorted(open_ids)
 
 
 def build_preflight(
@@ -731,6 +775,7 @@ def build_preflight(
         repair_loop_lessons=loop_lessons,
         hygiene_warnings=hygiene_warnings,
         failure_signatures=failure_signatures,
+        open_repair_loops_for_scope=_compute_open_loops_for_scope(store, scopes),
     )
 
 
@@ -797,6 +842,14 @@ def format_preflight_text(report: PreflightReport) -> str:
         lines.append("No historical failures for this scope yet.")
         lines.append("To build preflight intelligence, run a scoped dogfood session:")
         lines.append(f"  chimera-memory template dogfood --scope-path {scope_hint}")
+        lines.append("")
+
+    # v0.9: open repair loops for this scope
+    if report.open_repair_loops_for_scope:
+        lines.append("Open repair loops for this scope:")
+        for lid in report.open_repair_loops_for_scope:
+            lines.append(f"  - {lid}: same_scope_after_fix missing")
+        lines.append("Run: chimera-memory repair-loops for the exact wrap command template.")
         lines.append("")
 
     if report.repair_loops:
