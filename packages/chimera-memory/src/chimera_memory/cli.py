@@ -1009,6 +1009,35 @@ def _build_parser() -> argparse.ArgumentParser:
     bundle_diff.add_argument("--json", dest="json", action="store_true")
     bundle_diff.set_defaults(command="bundle")
 
+    # ── checks ─────────────────────────────────────────────────────
+    checks_parser = subparsers.add_parser(
+        "checks", help="Project check suites — define and run verification recipes"
+    )
+    checks_sub = checks_parser.add_subparsers(dest="checks_command")
+    checks_init = checks_sub.add_parser(
+        "init", help="Create a starter chimera-memory.checks.toml"
+    )
+    checks_init.add_argument(
+        "--preset", default="python", help="Preset template (default: python)"
+    )
+    checks_init.set_defaults(command="checks")
+
+    checks_run = checks_sub.add_parser(
+        "run", help="Run checks from chimera-memory.checks.toml"
+    )
+    checks_run.add_argument(
+        "--config", default="chimera-memory.checks.toml",
+        help="Config file path (default: chimera-memory.checks.toml)",
+    )
+    checks_run.add_argument(
+        "--bundle", action="store_true", help="Create receipt bundle after run"
+    )
+    checks_run.add_argument(
+        "--output-dir", dest="checks_output_dir",
+        help="Output directory for bundle (default: ./chimera-run)",
+    )
+    checks_run.set_defaults(command="checks")
+
     return parser
 
 
@@ -1083,6 +1112,8 @@ def main(argv: list[str] | None = None) -> int:
         return _template(parsed)
     if parsed.command == "bundle":
         return _bundle(parsed)
+    if parsed.command == "checks":
+        return _checks(parsed)
 
     if parsed.command in ("record", "settle"):
         print(
@@ -3001,3 +3032,156 @@ def _demo(parsed: argparse.Namespace) -> int:
           "--failure-origin organic_real "
           "--verification-scope package -- <your-test-command>")
     return 0
+
+
+_CHECKS_PRESET_PYTHON = """\
+# chimera-memory.checks.toml — Project verification recipe
+# Run with: chimera-memory checks run
+
+schema_version = 1
+scope_path = "."
+verification_scope = "package"
+failure_origin = "organic_real"
+
+[[checks]]
+name = "python-version"
+command = ["python", "--version"]
+
+# [[checks]]
+# name = "pytest"
+# command = ["pytest", "tests/", "-q"]
+
+# [[checks]]
+# name = "mypy"
+# command = ["mypy", "src/"]
+
+# [[checks]]
+# name = "ruff"
+# command = ["ruff", "check", "src/"]
+"""
+
+
+def _checks(parsed: argparse.Namespace) -> int:
+    """Handle checks init/run subcommands."""
+    cmd = getattr(parsed, "checks_command", None)
+    if cmd == "init":
+        return _checks_init(parsed)
+    if cmd == "run":
+        return _checks_run(parsed)
+    print("Usage: chimera-memory checks {init,run}")
+    return 2
+
+
+def _checks_init(parsed: argparse.Namespace) -> int:
+    """Create a starter chimera-memory.checks.toml."""
+    import sys
+
+    config_path = Path.cwd() / "chimera-memory.checks.toml"
+    if config_path.exists():
+        print(
+            f"Error: {config_path} already exists. Remove it first.",
+            file=sys.stderr,
+        )
+        return 1
+    config_path.write_text(_CHECKS_PRESET_PYTHON, encoding="utf-8")
+    print(f"Created {config_path.name}")
+    print("\nNext: chimera-memory checks run")
+    return 0
+
+
+def _checks_run(parsed: argparse.Namespace) -> int:
+    """Run checks from config and record through Chimera Memory."""
+    import sys
+    import tomllib
+
+    config_path = Path(parsed.config).resolve()
+    if not config_path.exists():
+        print(
+            f"Error: config not found: {config_path}\n"
+            "Run: chimera-memory checks init",
+            file=sys.stderr,
+        )
+        return 1
+
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+
+    checks = config.get("checks", [])
+    if not checks:
+        print("Error: no [[checks]] defined in config.", file=sys.stderr)
+        return 1
+
+    scope_path = config.get("scope_path", ".")
+    verification_scope = config.get("verification_scope", "package")
+    failure_origin = config.get("failure_origin", "organic_real")
+
+    # Validate commands are lists
+    for i, check in enumerate(checks):
+        cmd = check.get("command")
+        if not isinstance(cmd, list) or not all(isinstance(s, str) for s in cmd):
+            print(
+                f"Error: checks[{i}].command must be a list of strings.",
+                file=sys.stderr,
+            )
+            return 1
+
+    print("Chimera Memory checks run")
+    print(f"Config: {config_path.name}")
+    print(f"Checks: {len(checks)}")
+    print()
+
+    # Init ledger if needed
+    store = MemoryStore.from_paths()
+    if not store.memory_dir.exists():
+        store.initialize()
+        _ensure_gitignore(Path.cwd())
+
+    # Start session
+    main(["session", "start", "--branch", "checks",
+          "--task-label", f"checks run ({config_path.name})",
+          "--agent", "checks", "--model", "local",
+          "--harness-id", "chimera-checks"])
+
+    all_passed = True
+    for check in checks:
+        name = check.get("name", "unnamed")
+        cmd = check["command"]
+        wrap_args = [
+            "wrap",
+            "--scope-path", scope_path,
+            "--failure-origin", failure_origin,
+            "--verification-scope", verification_scope,
+            "--", *cmd,
+        ]
+        rc = main(wrap_args)
+        if rc == 0:
+            print(f"  ✓ {name}")
+        else:
+            print(f"  ✗ {name}")
+            all_passed = False
+            break  # stop on first failure
+
+    # End session
+    status = "PASSED" if all_passed else "FAILED"
+    main(["session", "end", "--status", status])
+
+    # Verify
+    main(["verify"])
+
+    # Bundle if requested
+    bundle_dir = None
+    if getattr(parsed, "bundle", False):
+        bundle_dir = Path(
+            getattr(parsed, "checks_output_dir", None) or "./chimera-run"
+        ).resolve()
+        receipt_dir = bundle_dir / "receipt"
+        main(["receipt", "bundle", "--output-dir", str(receipt_dir),
+              "--include-preflight", "--scope-path", scope_path])
+
+    print()
+    print(f"Result: {status}")
+    if bundle_dir:
+        print(f"Receipt: {bundle_dir / 'receipt'}")
+        print(f"\nNext: chimera-memory bundle inspect {bundle_dir / 'receipt'}")
+
+    return 0 if all_passed else 1
