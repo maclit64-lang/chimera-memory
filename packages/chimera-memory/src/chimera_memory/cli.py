@@ -3143,6 +3143,7 @@ def _checks_run(parsed: argparse.Namespace) -> int:
           "--harness-id", "chimera-checks"])
 
     all_passed = True
+    check_results: list[dict[str, object]] = []
     for check in checks:
         name = check.get("name", "unnamed")
         cmd = check["command"]
@@ -3154,6 +3155,13 @@ def _checks_run(parsed: argparse.Namespace) -> int:
             "--", *cmd,
         ]
         rc = main(wrap_args)
+        check_status = "VALIDATED" if rc == 0 else "CONTRADICTED"
+        check_results.append({
+            "name": name,
+            "command": cmd,
+            "status": check_status,
+            "exit_code": rc,
+        })
         if rc == 0:
             print(f"  ✓ {name}")
         else:
@@ -3177,6 +3185,58 @@ def _checks_run(parsed: argparse.Namespace) -> int:
         receipt_dir = bundle_dir / "receipt"
         main(["receipt", "bundle", "--output-dir", str(receipt_dir),
               "--include-preflight", "--scope-path", scope_path])
+
+        # Generate reports
+        report_data = {
+            "schema_version": 1,
+            "result": status,
+            "config_path": config_path.name,
+            "scope_path": scope_path,
+            "verification_scope": verification_scope,
+            "failure_origin": failure_origin,
+            "checks": check_results,
+            "receipt_path": "receipt",
+            "verify_status": "OK",
+            "next_actions": [
+                f"chimera-memory bundle inspect {receipt_dir}",
+            ],
+        }
+        (bundle_dir / "report.json").write_text(
+            json.dumps(report_data, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        # Markdown report
+        md_lines = [
+            "# Chimera Memory Check Run Report",
+            "",
+            f"**Result:** {status}",
+            f"**Config:** {config_path.name}",
+            f"**Scope:** {scope_path}",
+            "",
+            "## Checks",
+            "",
+            "| Name | Status | Exit |",
+            "|------|--------|------|",
+        ]
+        for cr in check_results:
+            icon = "✓" if cr["status"] == "VALIDATED" else "✗"
+            md_lines.append(
+                f"| {cr['name']} | {icon} {cr['status']} | {cr['exit_code']} |"
+            )
+        md_lines += [
+            "",
+            "## Next",
+            "",
+            f"- `chimera-memory bundle inspect {receipt_dir}`",
+            "",
+            "## Note",
+            "",
+            "M2B scoring, model ranking, and routing are not built.",
+        ]
+        (bundle_dir / "report.md").write_text(
+            "\n".join(md_lines) + "\n", encoding="utf-8"
+        )
 
     print()
     print(f"Result: {status}")
