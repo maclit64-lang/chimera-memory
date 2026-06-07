@@ -10,7 +10,7 @@ Records what an agent tried, which command verified it, what happened, and what 
 pip install chimera-memory
 ```
 
-Requires Python 3.10+. Installs `chimera-memory-types`, `pydantic`, and `filelock` automatically.
+Requires Python 3.12+. Installs `chimera-memory-types`, `pydantic`, and `filelock` automatically.
 
 ## Quickstart (5 commands)
 
@@ -29,6 +29,7 @@ chimera-memory session start \
 # 3. Wrap a verification command (test, lint, typecheck, …)
 chimera-memory wrap \
   --failure-origin organic_real \
+  --scope-path . \
   --verification-scope package \
   -- pytest tests/ -q
 
@@ -53,7 +54,7 @@ Generate a copy-paste session scaffold for your package:
 chimera-memory template dogfood --scope-path packages/chimera-memory
 ```
 
-Prompt templates for sustained use are in [`docs/prompts/`](../../docs/prompts/):
+Prompt templates for sustained use are in `docs/prompts/` in the [source repo](https://github.com/maclit64-lang/chimera-memory):
 
 - `kiro-dogfood.md` — Kiro agent session discipline
 - `generic-agent-dogfood.md` — Any agent
@@ -110,16 +111,6 @@ Shows:
 
 Not M2B scoring or model ranking. Advisory only.
 
-## Preflight check
-
-Before starting work, run a preflight advisory:
-
-```bash
-chimera-memory preflight --from-git
-```
-
-Shows M2B readiness level, scope summary, and any advisory warnings. Output is advisory only — no routing, no gating.
-
 ## CI receipt bundle
 
 Produce a full CI-ready artifact bundle (receipt, failures, reliability, preflight, GitHub summary):
@@ -142,7 +133,7 @@ chimera-memory evidence bundle --output-dir ./evidence
 chimera-memory evidence import ./evidence --dry-run --json
 ```
 
-Write-import is not available in 0.1.x. Dry-run only.
+Write-import is not available. Dry-run only.
 
 ## M2B readiness
 
