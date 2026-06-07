@@ -971,6 +971,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tmpl_dogfood.set_defaults(command="template")
 
+    # ── bundle inspect ─────────────────────────────────────────────
+    bundle_parser = subparsers.add_parser(
+        "bundle", help="Read-only bundle inspection"
+    )
+    bundle_sub = bundle_parser.add_subparsers(dest="bundle_command")
+    bundle_inspect = bundle_sub.add_parser(
+        "inspect",
+        help="Inspect a receipt or evidence bundle for safety before sharing/importing",
+    )
+    bundle_inspect.add_argument(
+        "bundle_path", help="Path to the bundle directory to inspect"
+    )
+    bundle_inspect.add_argument("--json", dest="json", action="store_true")
+    bundle_inspect.set_defaults(command="bundle")
+
     return parser
 
 
@@ -1032,6 +1047,8 @@ def main(argv: list[str] | None = None) -> int:
         return _agent_guide(parsed)
     if parsed.command == "template":
         return _template(parsed)
+    if parsed.command == "bundle":
+        return _bundle(parsed)
 
     if parsed.command in ("record", "settle"):
         print(
@@ -2466,4 +2483,161 @@ chimera-memory receipt bundle \\
 # ──────────────────────────────────────────────────────────────────────
 """
     print(template)
+    return 0
+
+
+def _bundle(parsed: argparse.Namespace) -> int:
+    """Handle bundle inspect subcommand."""
+    if getattr(parsed, "bundle_command", None) != "inspect":
+        print("Usage: chimera-memory bundle inspect <path> [--json]")
+        return 2
+    return _bundle_inspect(parsed)
+
+
+def _bundle_inspect(parsed: argparse.Namespace) -> int:
+    """Read-only inspection of a receipt or evidence bundle."""
+    import re
+
+    bundle_path = Path(parsed.bundle_path).resolve()
+    if not bundle_path.is_dir():
+        print(f"Error: {parsed.bundle_path} is not a directory", file=__import__("sys").stderr)
+        return 1
+
+    files = sorted(
+        p.name for p in bundle_path.iterdir()
+        if p.is_file() and not p.name.startswith(".")
+    )
+
+    # Detect bundle type
+    if "receipt.json" in files or "receipt.md" in files:
+        bundle_type = "receipt"
+    elif "manifest.json" in files and "events.jsonl" in files:
+        bundle_type = "evidence"
+    else:
+        bundle_type = "unknown"
+
+    # Expected files
+    RECEIPT_EXPECTED = {"README.md", "receipt.json", "receipt.md", "verify.json"}
+    EVIDENCE_EXPECTED = {"README.md", "manifest.json", "events.jsonl"}
+    expected = RECEIPT_EXPECTED if bundle_type == "receipt" else (
+        EVIDENCE_EXPECTED if bundle_type == "evidence" else set()
+    )
+    missing = sorted(expected - set(files))
+
+    # Sensitive files that should NOT be in a shared bundle
+    SENSITIVE_NAMES = {"claims.jsonl", "sessions.jsonl", "integrity.jsonl",
+                       "index.sqlite", "append_state.json"}
+    sensitive_found = sorted(SENSITIVE_NAMES & set(files))
+
+    # Check for .chimera-memory directory
+    has_chimera_dir = any(
+        p.is_dir() and p.name == ".chimera-memory" for p in bundle_path.iterdir()
+    )
+
+    # Scan text files for private paths and token patterns (cap at 1MB per file)
+    TOKEN_PATTERNS = [
+        r"pypi-[A-Za-z0-9]",
+        r"ghp_[A-Za-z0-9]{10,}",
+        r"github_pat_[A-Za-z0-9_]{20,}",
+        r"sk-[A-Za-z0-9]{20,}",
+        r"-----BEGIN PRIVATE KEY",
+    ]
+    PRIVATE_PATH_PATTERNS = [r"/Users/[a-zA-Z]", r"C:\\Users\\", r"/home/[a-zA-Z]"]
+    token_hits: list[str] = []
+    private_path_hits: list[str] = []
+    MAX_SCAN_SIZE = 1_048_576  # 1MB
+
+    for fname in files:
+        fp = bundle_path / fname
+        if fp.stat().st_size > MAX_SCAN_SIZE:
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for pat in TOKEN_PATTERNS:
+            if re.search(pat, text):
+                token_hits.append(fname)
+                break
+        for pat in PRIVATE_PATH_PATTERNS:
+            if re.search(pat, text):
+                private_path_hits.append(fname)
+                break
+
+    # Determine status
+    readme_present = "README.md" in files
+    manifest_present = "manifest.json" in files
+
+    if sensitive_found or has_chimera_dir:
+        status = "CRITICAL"
+    elif token_hits or private_path_hits:
+        status = "WARNING"
+    elif bundle_type == "unknown":
+        status = "UNKNOWN"
+    else:
+        status = "OK"
+
+    # Build notes/next_actions
+    notes: list[str] = []
+    next_actions: list[str] = []
+    if sensitive_found:
+        notes.append(f"Raw ledger files found: {', '.join(sensitive_found)}")
+        next_actions.append("Remove raw ledger files before sharing.")
+    if has_chimera_dir:
+        notes.append(".chimera-memory/ directory found inside bundle")
+        next_actions.append("Remove .chimera-memory/ directory before sharing.")
+    if token_hits:
+        notes.append(f"Token-like strings in: {', '.join(token_hits)}")
+        next_actions.append("Review and redact token-like content before sharing.")
+    if private_path_hits:
+        notes.append(f"Private paths in: {', '.join(private_path_hits)}")
+        next_actions.append("Review and redact private paths before sharing.")
+    if not notes:
+        notes.append("No safety issues detected.")
+        next_actions.append("Safe to review/share if contents are expected.")
+
+    result = {
+        "schema_version": 1,
+        "path": str(bundle_path),
+        "bundle_type": bundle_type,
+        "status": status,
+        "file_count": len(files),
+        "present_files": files,
+        "missing_expected_files": missing,
+        "unexpected_sensitive_files": sensitive_found,
+        "raw_ledger_files_found": bool(sensitive_found) or has_chimera_dir,
+        "token_like_hits": token_hits,
+        "private_path_hits": private_path_hits,
+        "readme_present": readme_present,
+        "manifest_present": manifest_present,
+        "notes": notes,
+        "next_actions": next_actions,
+    }
+
+    if parsed.json:
+        print(json.dumps(result, sort_keys=True))
+        return 0
+
+    # Text output
+    print(f"Bundle inspection: {parsed.bundle_path}")
+    print(f"Type:   {bundle_type}")
+    print(f"Status: {status}")
+    print(f"Files:  {len(files)}")
+    print()
+    if missing:
+        print(f"Missing expected: {', '.join(missing)}")
+    if sensitive_found:
+        print(f"⚠ Sensitive files: {', '.join(sensitive_found)}")
+    if has_chimera_dir:
+        print("⚠ .chimera-memory/ directory found")
+    if token_hits:
+        print(f"⚠ Token-like strings in: {', '.join(token_hits)}")
+    if private_path_hits:
+        print(f"⚠ Private paths in: {', '.join(private_path_hits)}")
+    print()
+    print(f"README:   {'yes' if readme_present else 'missing'}")
+    print(f"Manifest: {'yes' if manifest_present else 'N/A'}")
+    print()
+    for action in next_actions:
+        print(f"→ {action}")
     return 0
