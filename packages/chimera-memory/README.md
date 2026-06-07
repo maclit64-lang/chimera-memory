@@ -152,6 +152,8 @@ chimera-memory m2b-readiness
 
 Shows whether the local ledger has accumulated sufficient repair-loop evidence to consider M2B (model-to-baseline) comparison. This is a local readiness gate, not a scoring system.
 
+Run `chimera-memory m2b-readiness --explain` to see what evidence is missing before scoring can be trusted.
+
 ## What is not built
 
 | Capability | Status |

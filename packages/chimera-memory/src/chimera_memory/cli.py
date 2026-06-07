@@ -925,6 +925,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--all-ledger", dest="m2b_all_ledger", action="store_true",
         help="Evaluate all clean claims including legacy unlabeled.",
     )
+    m2b_parser.add_argument(
+        "--explain", dest="m2b_explain", action="store_true",
+        help="Show exactly what evidence is missing and how to build it honestly.",
+    )
     m2b_parser.set_defaults(command="m2b-readiness")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check local chimera-memory health")
@@ -1372,6 +1376,7 @@ def _m2b_readiness(parsed: argparse.Namespace) -> int:
 
     dq_only = getattr(parsed, "m2b_dq_only", False)
     all_ledger = getattr(parsed, "m2b_all_ledger", False)
+    explain = getattr(parsed, "m2b_explain", False)
     if dq_only and all_ledger:
         import sys as _sys
         print("error: --dq-only and --all-ledger are mutually exclusive", file=_sys.stderr)
@@ -1380,10 +1385,65 @@ def _m2b_readiness(parsed: argparse.Namespace) -> int:
     mode = "dq_cohort" if dq_only else "all_ledger" if all_ledger else "default"
     store = MemoryStore.from_paths(root=Path.cwd())
     report = compute_m2b_readiness(store, mode=mode)
+
     if parsed.json:
-        print(json.dumps(report.to_dict(), sort_keys=True))
-    else:
-        print(format_readiness_text(report))
+        d = report.to_dict()
+        if explain:
+            t = report.thresholds
+            cs = report.dq_cohort_summary or report.readiness_evaluation_summary
+            of_current = cs.get("organic_real_failed", 0)
+            cg_current = cs.get("comparable_groups", 0)
+            of_threshold = t.get("organic_failures_min", 5)
+            cg_threshold = t.get("comparable_groups_min", 2)
+            total_or = cs.get("organic_real", 0)
+            d["explain"] = {
+                "organic_real_failed_current": of_current,
+                "organic_real_failed_threshold": of_threshold,
+                "organic_real_failed_remaining": max(0, of_threshold - of_current),
+                "comparable_groups_current": cg_current,
+                "comparable_groups_threshold": cg_threshold,
+                "comparable_groups_remaining": max(0, cg_threshold - cg_current),
+                "total_organic_real_claims": total_or,
+                "advice": [
+                    "Use chimera-memory on real scoped work.",
+                    "Record real failures honestly as organic_real.",
+                    "Use same_scope_after_fix only after fixing a real defect.",
+                    "Do not manufacture failures.",
+                ],
+            }
+        print(json.dumps(d, sort_keys=True))
+        return 0
+
+    print(format_readiness_text(report))
+    if explain:
+        t = report.thresholds
+        cs = report.dq_cohort_summary or report.readiness_evaluation_summary
+        of_current = cs.get("organic_real_failed", 0)
+        cg_current = cs.get("comparable_groups", 0)
+        of_threshold = t.get("organic_failures_min", 5)
+        cg_threshold = t.get("comparable_groups_min", 2)
+        total_or = cs.get("organic_real", 0)
+        print("Why readiness is blocked:\n")
+        print("  organic_real_failed:")
+        print(f"    current:   {of_current}")
+        print(f"    required:  {of_threshold}")
+        print(f"    remaining: {max(0, of_threshold - of_current)}")
+        print("\n  comparable_groups:")
+        print(f"    current:   {cg_current}")
+        print(f"    required:  {cg_threshold}")
+        print(f"    remaining: {max(0, cg_threshold - cg_current)}")
+        print(f"\n  total organic_real claims: {total_or}")
+        print(
+            "\nHow to build qualifying evidence honestly:\n"
+            "\n  - Use chimera-memory on real scoped work."
+            "\n  - Wrap real validation commands with --scope-path and --failure-origin."
+            "\n  - If a real command fails due to a real code/test/type/lint defect,"
+            "\n    record it as --failure-origin organic_real."
+            "\n  - Fix the defect and rerun with --repair-phase same_scope_after_fix."
+            "\n  - Do not manufacture failures."
+            "\n  - Do not weaken thresholds."
+            "\n  - M2B readiness is a quality gate, not a deadline."
+        )
     return 0
 
 
