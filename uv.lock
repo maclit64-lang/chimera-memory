@@ -70,7 +70,7 @@ wheels = [
 
 [[package]]
 name = "chimera-memory"
-version = "0.15.0"
+version = "0.16.0"
 source = { editable = "packages/chimera-memory" }
 dependencies = [
     { name = "chimera-memory-types" },
@@ -85,7 +85,7 @@ requires-dist = [
 
 [[package]]
 name = "chimera-memory-types"
-version = "0.15.0"
+version = "0.16.0"
 source = { editable = "packages/chimera-memory-types" }
 dependencies = [
     { name = "pydantic" },
