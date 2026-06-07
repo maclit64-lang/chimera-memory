@@ -75,6 +75,24 @@ chimera-memory doctor --json
 
 Exit code: `0` = healthy, `1` = warnings (e.g. no active session), `2` = critical (e.g. not initialized).
 
+## Is my ledger healthy?
+
+`doctor` also audits whether the ledger is being used correctly:
+
+```bash
+chimera-memory doctor        # shows Evidence Hygiene section
+chimera-memory doctor --json # machine-readable, includes evidence_hygiene + next_actions
+```
+
+Evidence hygiene checks:
+- Scoped claim ratio (claims with `--scope-path` set)
+- Unknown `failure_origin` count (claims missing classification)
+- Repair-loop completeness (loops with `same_scope_after_fix`)
+- Orphaned repair phases (`--repair-phase` without `--repair-loop-id`)
+- Test/synthetic and invocation-artifact claim counts
+
+If issues are found, `doctor` prints actionable next steps.
+
 ## Preflight Intelligence (v0.6)
 
 Before starting work, surface historical failures, repair-loop lessons, and hygiene warnings:

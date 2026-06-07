@@ -57,6 +57,129 @@ def _ensure_gitignore(root: Path) -> None:
         print(f"Created .gitignore with {_GITIGNORE_ENTRY}")
 
 
+_KNOWN_ORIGINS_FOR_HYGIENE = {
+    "organic_real", "controlled_real", "invocation_artifact",
+    "test_first_contract", "synthetic",
+}
+_TEST_FIXTURE_ORIGINS = {"test_first_contract", "synthetic"}
+
+
+def _build_evidence_hygiene(store: MemoryStore) -> dict[str, object]:
+    """Compute evidence hygiene metrics from existing claims. Read-only."""
+    from chimera_memory.data_quality import (
+        K_FAILURE_ORIGIN,
+        K_REPAIR_LOOP_ID,
+        K_REPAIR_PHASE,
+        K_SCOPE_PATHS,
+    )
+    from chimera_memory.errata import effective_failure_origin, load_errata
+    from chimera_memory.query import latest_claims_from_records
+    from chimera_memory_types.knowledge import ClaimStatus
+
+    raw = store.read_claims()
+    unique = latest_claims_from_records(raw)
+    settled = [c for c in unique if c.claim_status is not None]
+
+    errata = load_errata(store.memory_dir)
+
+    total = len(settled)
+    scoped = 0
+    unknown_origin = 0
+    repair_phase_no_loop = 0
+    test_fixture = 0
+    invocation_artifact = 0
+
+    # Repair loop tracking: loop_id -> set of repair phases with VALIDATED same_scope_after_fix
+    loop_has_contradiction: dict[str, bool] = {}
+    loop_has_ssaf_validated: dict[str, bool] = {}
+
+    for c in settled:
+        m = c.metadata or {}
+
+        # Scoped?
+        sp = m.get(K_SCOPE_PATHS)
+        if sp and (isinstance(sp, list) and sp) or (isinstance(sp, str) and sp):
+            scoped += 1
+
+        # Failure origin
+        fo = effective_failure_origin(c, errata) or m.get(K_FAILURE_ORIGIN) or ""
+        if not fo or fo not in _KNOWN_ORIGINS_FOR_HYGIENE:
+            unknown_origin += 1
+        if fo in _TEST_FIXTURE_ORIGINS:
+            test_fixture += 1
+        if fo == "invocation_artifact":
+            invocation_artifact += 1
+
+        # Repair phase without loop id
+        rp = m.get(K_REPAIR_PHASE)
+        rl = m.get(K_REPAIR_LOOP_ID)
+        if rp and rp != "none" and not rl:
+            repair_phase_no_loop += 1
+
+        # Repair loop completeness
+        if rl:
+            if c.claim_status == ClaimStatus.CONTRADICTED:
+                loop_has_contradiction[rl] = True
+            if (c.claim_status == ClaimStatus.VALIDATED
+                    and rp == "same_scope_after_fix"):
+                loop_has_ssaf_validated[rl] = True
+
+    all_loop_ids = set(loop_has_contradiction) | set(loop_has_ssaf_validated)
+    complete_ids = {
+        lid for lid in all_loop_ids
+        if loop_has_contradiction.get(lid) and loop_has_ssaf_validated.get(lid)
+    }
+    open_ids = sorted(all_loop_ids - complete_ids)
+
+    ratio = round(scoped / total, 2) if total > 0 else 0.0
+
+    return {
+        "total_claims": total,
+        "scoped_claim_count": scoped,
+        "unscoped_claim_count": total - scoped,
+        "scoped_claim_ratio": ratio,
+        "unknown_failure_origin_count": unknown_origin,
+        "repair_phase_without_loop_count": repair_phase_no_loop,
+        "open_repair_loop_count": len(open_ids),
+        "open_repair_loop_ids": open_ids,
+        "complete_repair_loop_count": len(complete_ids),
+        "test_fixture_claim_count": test_fixture,
+        "invocation_artifact_count": invocation_artifact,
+    }
+
+
+def _build_next_actions(hygiene: dict[str, Any]) -> list[str]:
+    """Return actionable remediation items based on hygiene metrics."""
+    actions: list[str] = []
+    unscoped = int(hygiene.get("unscoped_claim_count") or 0)
+    unknown_fo = int(hygiene.get("unknown_failure_origin_count") or 0)
+    open_ids: list[str] = list(hygiene.get("open_repair_loop_ids") or [])
+    rp_no_loop = int(hygiene.get("repair_phase_without_loop_count") or 0)
+    total = int(hygiene.get("total_claims") or 0)
+    scoped = int(hygiene.get("scoped_claim_count") or 0)
+
+    if unscoped > 0:
+        actions.append("Add --scope-path to future wrap commands.")
+    if unknown_fo > 0:
+        actions.append(
+            f"Set --failure-origin on {unknown_fo} claim(s) "
+            f"(run: chimera-memory agent-guide --agent generic)."
+        )
+    for lid in open_ids[:3]:
+        actions.append(
+            f"Complete repair loop {lid} with --repair-phase same_scope_after_fix."
+        )
+    if rp_no_loop > 0:
+        actions.append(
+            f"Add --repair-loop-id to {rp_no_loop} wrap command(s) that use --repair-phase."
+        )
+    if total > 0 and scoped == 0:
+        actions.append(
+            "Run: chimera-memory template dogfood --scope-path <your-package>"
+        )
+    return actions
+
+
 def _doctor(parsed: argparse.Namespace) -> int:
     """Read-only health check for the local chimera-memory store."""
     from chimera_memory.errata import effective_failure_origin, load_errata
@@ -172,6 +295,24 @@ def _doctor(parsed: argparse.Namespace) -> int:
     checks.append({"name": "organic_failures", "ok": True,
                    "message": f"organic_real failures: {organic_failed}"})
 
+    # 9. Evidence hygiene
+    hygiene: dict[str, Any] = {}
+    next_actions: list[str] = []
+    if initialized:
+        try:
+            store_h = MemoryStore.from_paths(root=root)
+            hygiene = _build_evidence_hygiene(store_h)
+            next_actions = _build_next_actions(hygiene)
+            # Hygiene problems are warnings, not critical
+            _has_hygiene_issues = (
+                hygiene.get("unscoped_claim_count", 0)
+                or hygiene.get("unknown_failure_origin_count", 0)
+            )
+            if _has_hygiene_issues and "evidence hygiene issues" not in warnings:
+                warnings.append("evidence hygiene issues detected")
+        except Exception:
+            pass
+
     # Overall status
     if critical:
         overall = "critical"
@@ -213,6 +354,8 @@ def _doctor(parsed: argparse.Namespace) -> int:
             "warnings": warnings,
             "critical": critical,
             "next_steps": next_steps,
+            "evidence_hygiene": hygiene,
+            "next_actions": next_actions,
         }
         print(json.dumps(payload, sort_keys=True))
     else:
@@ -226,6 +369,43 @@ def _doctor(parsed: argparse.Namespace) -> int:
             if c["name"] == "m2b_readiness" and m2b_blockers:
                 for b in m2b_blockers:
                     print(f"    ↳ {b}")
+
+        if hygiene:
+            total_c = int(hygiene.get("total_claims", 0))
+            scoped_c = int(hygiene.get("scoped_claim_count", 0))
+            ratio_pct = int(round(float(hygiene.get("scoped_claim_ratio", 0.0)) * 100))
+            unscoped_c = int(hygiene.get("unscoped_claim_count", 0))
+            unk_fo = int(hygiene.get("unknown_failure_origin_count", 0))
+            rp_no_loop = int(hygiene.get("repair_phase_without_loop_count", 0))
+            open_loops = int(hygiene.get("open_repair_loop_count", 0))
+            open_ids = list(hygiene.get("open_repair_loop_ids", []))  # type: ignore[arg-type]
+            complete_loops = int(hygiene.get("complete_repair_loop_count", 0))
+            test_fix = int(hygiene.get("test_fixture_claim_count", 0))
+            inv_art = int(hygiene.get("invocation_artifact_count", 0))
+
+            print("\nEvidence Hygiene:")
+            sym = "✓" if unscoped_c == 0 else "!"
+            print(f"  {sym} scoped claims: {scoped_c}/{total_c} ({ratio_pct}%)")
+            if unscoped_c:
+                print(f"  ! unscoped claims: {unscoped_c}")
+            sym = "✓" if unk_fo == 0 else "!"
+            print(f"  {sym} unknown failure_origin: {unk_fo} claim(s)")
+            sym = "✓" if rp_no_loop == 0 else "!"
+            print(f"  {sym} repair_phase without loop_id: {rp_no_loop}")
+            if open_loops:
+                ids_str = ": " + ", ".join(open_ids) if open_ids else ""
+                print(f"  ! open repair loops: {open_loops}{ids_str}")
+            else:
+                print("  ✓ open repair loops: 0")
+            print(f"  ✓ complete repair loops: {complete_loops}")
+            print(f"  ✓ test/synthetic claims: {test_fix} (not organic_real)")
+            print(f"  ✓ invocation_artifact claims: {inv_art}")
+
+        if next_actions:
+            print("\nNext actions:")
+            for na in next_actions:
+                print(f"  - {na}")
+
         print()
         print("Not built: M2B scoring · model routing · hosted/cloud sync · write-import")
         if next_steps:

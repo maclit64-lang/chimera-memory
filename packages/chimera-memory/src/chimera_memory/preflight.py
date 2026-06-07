@@ -281,7 +281,7 @@ class PreflightReport:
     failure_signatures: list[FailureSignature] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "schema_version": self.schema_version,
             "source": self.source,
             "filters": self.filters,
@@ -304,6 +304,10 @@ class PreflightReport:
                 "routing, or statistical proof."
             ),
         }
+        # Additive: empty-ledger note (v0.8)
+        if not self.known_failures and not self.recent_failures:
+            d["intelligence_note"] = "no_matching_scoped_claims"
+        return d
 
 
 def _scope_match_reason(
@@ -776,6 +780,23 @@ def format_preflight_text(report: PreflightReport) -> str:
         lines.append("")
     else:
         lines.append("Recent failures: none matching scope")
+        lines.append("")
+
+    # Empty-ledger guidance: when no intelligence is available for this scope
+    _has_intelligence = (
+        bool(report.known_failures)
+        or bool(report.recent_failures)
+        or bool(report.repair_loop_lessons)
+    )
+    if not _has_intelligence:
+        scope_hint = (
+            report.inferred_scope_paths[0]
+            if report.inferred_scope_paths
+            else "<your-package>"
+        )
+        lines.append("No historical failures for this scope yet.")
+        lines.append("To build preflight intelligence, run a scoped dogfood session:")
+        lines.append(f"  chimera-memory template dogfood --scope-path {scope_hint}")
         lines.append("")
 
     if report.repair_loops:
