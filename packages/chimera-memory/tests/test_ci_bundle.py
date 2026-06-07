@@ -255,3 +255,42 @@ def test_bundle_preflight_no_evidence_case(tmp_path: Path, monkeypatch) -> None:
     parsed = json.loads((bundle_dir / "preflight.json").read_text())
     # No evidence in test ledger; should still be parseable
     assert isinstance(parsed.get("matching_claim_count"), int)
+
+
+def test_bundle_includes_readme(tmp_path: Path, monkeypatch) -> None:
+    """Receipt bundle includes a README.md explaining contents."""
+    monkeypatch.chdir(tmp_path)
+    _setup_session(tmp_path)
+    bundle_dir = tmp_path / "b"
+    main(["receipt", "bundle", "--output-dir", str(bundle_dir)])
+    readme = bundle_dir / "README.md"
+    assert readme.exists()
+    text = readme.read_text()
+    assert "Receipt Bundle" in text
+    assert "receipt.md" in text
+    assert "receipt.json" in text
+    assert ".chimera-memory/" in text
+
+
+def test_bundle_readme_no_private_paths(tmp_path: Path, monkeypatch) -> None:
+    """Receipt bundle README does not contain private paths."""
+    monkeypatch.chdir(tmp_path)
+    _setup_session(tmp_path)
+    bundle_dir = tmp_path / "b"
+    main(["receipt", "bundle", "--output-dir", str(bundle_dir)])
+    text = (bundle_dir / "README.md").read_text()
+    assert "/Users/" not in text
+    assert "pypi-" not in text
+    assert "ghp_" not in text
+
+
+def test_bundle_readme_safety_section(tmp_path: Path, monkeypatch) -> None:
+    """Receipt bundle README explains safety and exclusions."""
+    monkeypatch.chdir(tmp_path)
+    _setup_session(tmp_path)
+    bundle_dir = tmp_path / "b"
+    main(["receipt", "bundle", "--output-dir", str(bundle_dir)])
+    text = (bundle_dir / "README.md").read_text()
+    assert "Safety" in text
+    assert "claims.jsonl" in text
+    assert "sessions.jsonl" in text
