@@ -986,6 +986,15 @@ def _build_parser() -> argparse.ArgumentParser:
     bundle_inspect.add_argument("--json", dest="json", action="store_true")
     bundle_inspect.set_defaults(command="bundle")
 
+    bundle_diff = bundle_sub.add_parser(
+        "diff",
+        help="Compare two bundles (read-only, no import, no writes)",
+    )
+    bundle_diff.add_argument("old_bundle", help="Path to the old/baseline bundle")
+    bundle_diff.add_argument("new_bundle", help="Path to the new/current bundle")
+    bundle_diff.add_argument("--json", dest="json", action="store_true")
+    bundle_diff.set_defaults(command="bundle")
+
     return parser
 
 
@@ -2487,11 +2496,14 @@ chimera-memory receipt bundle \\
 
 
 def _bundle(parsed: argparse.Namespace) -> int:
-    """Handle bundle inspect subcommand."""
-    if getattr(parsed, "bundle_command", None) != "inspect":
-        print("Usage: chimera-memory bundle inspect <path> [--json]")
-        return 2
-    return _bundle_inspect(parsed)
+    """Handle bundle inspect/diff subcommands."""
+    cmd = getattr(parsed, "bundle_command", None)
+    if cmd == "inspect":
+        return _bundle_inspect(parsed)
+    if cmd == "diff":
+        return _bundle_diff(parsed)
+    print("Usage: chimera-memory bundle {inspect,diff} ...")
+    return 2
 
 
 def _bundle_inspect(parsed: argparse.Namespace) -> int:
@@ -2640,4 +2652,181 @@ def _bundle_inspect(parsed: argparse.Namespace) -> int:
     print()
     for action in next_actions:
         print(f"→ {action}")
+    return 0
+
+
+def _bundle_diff(parsed: argparse.Namespace) -> int:
+    """Read-only comparison of two receipt or evidence bundles."""
+    old_path = Path(parsed.old_bundle).resolve()
+    new_path = Path(parsed.new_bundle).resolve()
+
+    for p, label in [(old_path, "old"), (new_path, "new")]:
+        if not p.is_dir():
+            print(
+                f"Error: {label} bundle path is not a directory: {p}",
+                file=__import__("sys").stderr,
+            )
+            return 1
+
+    def _files(d: Path) -> set[str]:
+        return {
+            p.name for p in d.iterdir()
+            if p.is_file() and not p.name.startswith(".")
+        }
+
+    def _type(files: set[str]) -> str:
+        if "receipt.json" in files or "receipt.md" in files:
+            return "receipt"
+        if "manifest.json" in files and "events.jsonl" in files:
+            return "evidence"
+        return "unknown"
+
+    def _read_json(d: Path, name: str) -> dict | None:
+        f = d / name
+        if f.exists() and f.stat().st_size < 1_048_576:
+            try:
+                return json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return None
+
+    old_files = _files(old_path)
+    new_files = _files(new_path)
+    old_type = _type(old_files)
+    new_type = _type(new_files)
+
+    # Compatibility
+    if old_type == "unknown" or new_type == "unknown":
+        status = "UNKNOWN"
+        compatible = False
+    elif old_type != new_type:
+        status = "INCOMPATIBLE"
+        compatible = False
+    else:
+        status = "OK"
+        compatible = True
+
+    # File delta
+    added = sorted(new_files - old_files)
+    removed = sorted(old_files - new_files)
+    common = sorted(old_files & new_files)
+
+    # Extract counts
+    def _count(d: Path, btype: str) -> dict:
+        counts: dict[str, int | str | None] = {}
+        if btype == "receipt":
+            status_data = _read_json(d, "status.json")
+            if status_data:
+                counts["claim_count"] = status_data.get(
+                    "settled_unique_claims",
+                    status_data.get("unique_claims"),
+                )
+                counts["failure_count"] = len(
+                    (_read_json(d, "failures.json") or {}).get("failures", [])
+                )
+            verify_data = _read_json(d, "verify.json")
+            if verify_data:
+                counts["integrity_status"] = verify_data.get("status")
+                counts["broken_records"] = verify_data.get("broken_records")
+        elif btype == "evidence":
+            manifest = _read_json(d, "manifest.json")
+            if manifest:
+                counts["claim_count"] = manifest.get("claim_count")
+                counts["event_count"] = manifest.get("event_count")
+        return counts
+
+    old_counts = _count(old_path, old_type) if compatible else {}
+    new_counts = _count(new_path, new_type) if compatible else {}
+
+    # Compute deltas
+    def _delta(key: str) -> int | None:
+        o = old_counts.get(key)
+        n = new_counts.get(key)
+        if isinstance(o, int) and isinstance(n, int):
+            return n - o
+        return None
+
+    claim_delta = _delta("claim_count")
+    failure_delta = _delta("failure_count")
+    event_delta = _delta("event_count")
+
+    old_integrity = old_counts.get("integrity_status")
+    new_integrity = new_counts.get("integrity_status")
+    integrity_change = (
+        f"{old_integrity} → {new_integrity}"
+        if old_integrity and new_integrity and old_integrity != new_integrity
+        else None
+    )
+
+    # Warnings
+    warnings: list[str] = []
+    notes: list[str] = []
+    if not compatible:
+        warnings.append(
+            f"Bundle types differ: old={old_type}, new={new_type}"
+        )
+    if failure_delta and failure_delta > 0:
+        warnings.append(f"Failures increased by {failure_delta}")
+    if integrity_change:
+        warnings.append(f"Integrity status changed: {integrity_change}")
+
+    next_actions: list[str] = []
+    if not compatible:
+        next_actions.append("Compare bundles of the same type.")
+    elif warnings:
+        next_actions.append("Review warnings before sharing.")
+    else:
+        next_actions.append("Bundles are comparable. Safe to review delta.")
+
+    result = {
+        "schema_version": 1,
+        "old_path": str(old_path),
+        "new_path": str(new_path),
+        "old_bundle_type": old_type,
+        "new_bundle_type": new_type,
+        "status": status,
+        "compatible": compatible,
+        "file_delta": {
+            "added": added,
+            "removed": removed,
+            "common": common,
+        },
+        "claim_count_delta": claim_delta,
+        "failure_count_delta": failure_delta,
+        "evidence_event_count_delta": event_delta,
+        "integrity_status_change": integrity_change,
+        "notes": notes,
+        "warnings": warnings,
+        "next_actions": next_actions,
+    }
+
+    if parsed.json:
+        print(json.dumps(result, sort_keys=True))
+        return 0
+
+    # Text output
+    print("Bundle diff:")
+    print(f"  old: {parsed.old_bundle} ({old_type})")
+    print(f"  new: {parsed.new_bundle} ({new_type})")
+    print(f"  status: {status}")
+    print()
+    if added:
+        print(f"  files added:   {', '.join(added)}")
+    if removed:
+        print(f"  files removed: {', '.join(removed)}")
+    print(f"  files common:  {len(common)}")
+    print()
+    if claim_delta is not None:
+        print(f"  claim count:   {'+' if claim_delta >= 0 else ''}{claim_delta}")
+    if failure_delta is not None:
+        print(f"  failure count: {'+' if failure_delta >= 0 else ''}{failure_delta}")
+    if event_delta is not None:
+        print(f"  event count:   {'+' if event_delta >= 0 else ''}{event_delta}")
+    if integrity_change:
+        print(f"  integrity:     {integrity_change}")
+    print()
+    for w in warnings:
+        print(f"  ⚠ {w}")
+    for action in next_actions:
+        print(f"  → {action}")
     return 0
