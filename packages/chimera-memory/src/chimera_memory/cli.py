@@ -518,6 +518,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     quickstart_parser.set_defaults(command="quickstart")
 
+    demo_parser = subparsers.add_parser(
+        "demo", help="Run a local demo showing the full value loop (safe, no network)"
+    )
+    demo_parser.add_argument(
+        "--output-dir", dest="demo_output_dir",
+        help="Directory to write demo artifacts (default: temp dir)",
+    )
+    demo_parser.set_defaults(command="demo")
+
     for command in ("record", "settle"):
         p = subparsers.add_parser(command, help=argparse.SUPPRESS)
         p.set_defaults(command=command)
@@ -1028,6 +1037,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if parsed.command == "quickstart":
         return _quickstart(parsed)
+    if parsed.command == "demo":
+        return _demo(parsed)
     if parsed.command == "wrap":
         return _wrap_pytest(parsed)
     if parsed.command == "status":
@@ -2892,4 +2903,101 @@ Notes:
   - Run 'chimera-memory doctor' for a health check at any point.
   - Run 'chimera-memory agent-guide --agent generic' for agent protocol.\
 """)
+    return 0
+
+
+def _demo(parsed: argparse.Namespace) -> int:
+    """Run a safe local demo of the full Chimera Memory value loop."""
+    import os
+    import sys
+    import tempfile
+
+    output_dir = getattr(parsed, "demo_output_dir", None)
+    if output_dir:
+        root = Path(output_dir).resolve()
+        if root.exists() and any(root.iterdir()):
+            print(
+                f"Error: output directory is not empty: {root}",
+                file=sys.stderr,
+            )
+            return 1
+        root.mkdir(parents=True, exist_ok=True)
+    else:
+        root = Path(tempfile.mkdtemp(prefix="chimera-demo-"))
+
+    workspace = root / "workspace"
+    receipt_dir = root / "receipt"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    # Save and switch cwd
+    orig_cwd = Path.cwd()
+    os.chdir(workspace)
+
+    try:
+        print("Chimera Memory Demo")
+        print("=" * 40)
+        print()
+
+        # 1. Init
+        print("1. Initializing demo ledger...")
+        main(["init"])
+        print("   ✓ Ledger created")
+
+        # 2. Session
+        print("2. Starting demo session...")
+        main(["session", "start", "--branch", "demo",
+              "--task-label", "demo", "--agent", "demo",
+              "--model", "demo", "--harness-id", "demo"])
+        print("   ✓ Session started")
+
+        # 3. Wrap
+        print("3. Wrapping a verification command...")
+        main(["wrap", "--scope-path", ".",
+              "--failure-origin", "organic_real",
+              "--verification-scope", "package",
+              "--", sys.executable, "-c",
+              "print('hello chimera-memory')"])
+        print("   ✓ Command wrapped")
+
+        # 4. Session end
+        print("4. Ending session...")
+        main(["session", "end", "--status", "PASSED"])
+        print("   ✓ Session closed")
+
+        # 5. Verify
+        print("5. Verifying integrity...")
+        main(["verify"])
+        print("   ✓ Integrity OK")
+
+        # 6. Receipt bundle
+        print("6. Creating receipt bundle...")
+        main(["receipt", "bundle", "--output-dir", str(receipt_dir),
+              "--include-preflight", "--scope-path", "."])
+        print(f"   ✓ Receipt bundle at {receipt_dir}/")
+
+        # 7. Bundle inspect
+        print("7. Inspecting receipt bundle...")
+        main(["bundle", "inspect", str(receipt_dir)])
+        print("   ✓ Bundle inspection complete")
+
+    finally:
+        os.chdir(orig_cwd)
+
+    print()
+    print("=" * 40)
+    print("Demo complete!")
+    print()
+    print(f"  Workspace: {workspace}")
+    print(f"  Receipt:   {receipt_dir}")
+    print()
+    print("Try next:")
+    print(f"  chimera-memory bundle inspect {receipt_dir}")
+    print("  chimera-memory quickstart")
+    print()
+    print("To use in your own project:")
+    print("  cd <your-project>")
+    print("  chimera-memory init")
+    print("  chimera-memory wrap --scope-path . "
+          "--failure-origin organic_real "
+          "--verification-scope package -- <your-test-command>")
     return 0
