@@ -1,0 +1,14 @@
+[claude_hooks]
+auto_lock = true
+scope_path = "packages/chimera-memory"
+
+falsifiers = [
+  ["uv", "run", "pytest", "packages/chimera-memory/tests/test_claude_hooks.py", "packages/chimera-memory/tests/test_prompt_auto_lock.py"]
+]
+
+must_not_break = [
+  ["uv", "run", "pytest", "-m", "not slow"],
+  ["uv", "run", "mypy", "packages/chimera-memory/src"],
+  ["uv", "run", "ruff", "check", "packages/chimera-memory"],
+  ["uv", "run", "chimera-memory", "verify"]
+]

@@ -571,9 +571,8 @@ def install_hooks(
         if ".claude/hooks/" not in text and ".claude/" not in text:
             warnings.append(
                 ".claude/hooks/ is not in .gitignore. "
-                "The hook scripts are safe to commit, but the sentinel files "
-                "in /tmp are ephemeral. Consider adding .claude/ to .gitignore "
-                "if you don't want hook config committed."
+                "The hook scripts are safe to commit (they contain no secrets). "
+                "If you prefer not to commit them, add '.claude/' to .gitignore."
             )
 
     return {
