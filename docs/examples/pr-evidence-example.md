@@ -14,15 +14,27 @@ reviewer-facing artifact: `PR_EVIDENCE.md`. It answers, for one branch:
 ## Generate
 
 ```bash
-# Local working-tree changes vs HEAD
-chimera-memory xray generate --output PR_EVIDENCE.md
-
-# PR-style range
+# Recommended for PR reviews: commit-range mode, no untracked noise
 chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
 
+# For active dev: working-tree mode (includes uncommitted/untracked files)
+chimera-memory xray generate --output PR_EVIDENCE.md
+
 # Machine-readable
-chimera-memory xray generate --json
+chimera-memory xray generate --base main --head HEAD --json
 ```
+
+### Which mode to use
+
+| Mode | When | Untracked files? |
+|---|---|---|
+| `--base main --head HEAD` | PR review, CI, final evidence | **No** — clean signal |
+| Working-tree (no `--base`) | Active dev, mid-edit review | **Yes** — may include cache/build artefacts |
+
+For PR reviews, always use `--base main --head HEAD`. Working-tree mode can
+surface `__pycache__/`, `.pytest_cache/`, `.mypy_cache/` etc. as evidence-dark
+entries. The report classifies these automatically, but commit-range mode
+eliminates the noise entirely.
 
 ## Example output
 

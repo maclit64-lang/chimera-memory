@@ -87,3 +87,11 @@ def test_readme_mentions_xray() -> None:
 def test_readme_xray_section_is_honest() -> None:
     text = _README.read_text()
     assert "settled evidence, not proof of correctness" in text
+
+
+def test_xray_contract_mentions_new_fields() -> None:
+    text = _XRAY_CONTRACT.read_text()
+    assert "working_tree_warning" in text
+    assert "evidence_dark_classified" in text
+    assert "evidence_dark_source" in text
+    assert "evidence_dark_cache" in text
