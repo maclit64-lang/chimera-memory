@@ -659,3 +659,167 @@ def validate_claim_spec(
         "errors": errors,
         "warnings": warnings,
     }
+
+
+# ---------------------------------------------------------------------------
+# Agent-seam auto-lock builder (v0.23)
+# ---------------------------------------------------------------------------
+
+WARNING_AUTO_FROM_CHECKS = "AUTO_FROM_CHECKS_CONFIG"
+WARNING_MISSING_TARGETED_FALSIFIER = "MISSING_TARGETED_FALSIFIER"
+_DEFAULT_PREDICTED_OUTCOME = "pre-committed checks pass"
+
+
+def _parse_json_commands(raw: str, field: str) -> list[list[str]]:
+    """Parse a JSON string into a list of command arrays.
+
+    Expected shape: ``[["cmd", "arg1"], ["cmd2"]]``.
+    Rejects shell strings, non-list shapes, and non-string tokens.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ClaimError(
+            f"{field}: invalid JSON — {exc}. "
+            "Expected a JSON array of string arrays, e.g. "
+            '\'[["uv","run","pytest","tests/test_x.py"]]\'.'
+        ) from exc
+    if not isinstance(parsed, list):
+        raise ClaimError(
+            f"{field}: must be a JSON array of command arrays, got {type(parsed).__name__}."
+        )
+    result: list[list[str]] = []
+    for i, item in enumerate(parsed):
+        if not isinstance(item, list):
+            raise ClaimError(
+                f"{field}[{i}]: each element must be a list of strings, "
+                f"got {type(item).__name__}. Shell strings are not accepted."
+            )
+        result.append(validate_command_list(item))
+    return result
+
+
+def build_claim_spec_from_auto_inputs(
+    *,
+    # CLI flags — each overrides the corresponding env var when not None/empty.
+    intent: str | None = None,
+    scope_path: str | None = None,
+    falsifiers_json: str | None = None,
+    must_not_break_json: str | None = None,
+    predicted_outcome: str | None = None,
+    # Store for session-aware defaults (optional; no-op if None).
+    store: MemoryStore | None = None,
+    root: Path | None = None,
+    # Allow fallback to checks.toml when no falsifier source provided.
+    from_checks: bool = False,
+    checks_config_path: Path | None = None,
+) -> tuple[ClaimSpec, dict[str, Any]]:
+    """Build a :class:`ClaimSpec` from env vars / flags (no claim.toml needed).
+
+    Returns ``(spec, extra_meta)`` where ``extra_meta`` carries
+    ``auto_lock=True`` and any additional context for the JSON response.
+
+    Precedence (highest → lowest):
+      1. CLI flag argument
+      2. ``CHIMERA_*`` environment variable
+      3. Active session field (scope only)
+      4. Hard-coded default ("." scope, empty must-not-break)
+
+    Raises :class:`ClaimError` on hard validation failures.
+    """
+    def _env(key: str) -> str | None:
+        v = os.environ.get(key, "").strip()
+        return v or None
+
+    # ── intent ──────────────────────────────────────────────────────────────
+    resolved_intent = intent or _env("CHIMERA_INTENT")
+    if not resolved_intent:
+        raise ClaimError(
+            "intent is required for --auto. "
+            "Set CHIMERA_INTENT or pass --intent."
+        )
+
+    # ── scope_path ──────────────────────────────────────────────────────────
+    resolved_scope = scope_path or _env("CHIMERA_SCOPE_PATH")
+    if not resolved_scope and store is not None:
+        session = store.current_session()
+        if session:
+            resolved_scope = session.get("task_label")  # best-effort; may be None
+    if not resolved_scope:
+        resolved_scope = "."
+
+    # ── predicted_outcome ───────────────────────────────────────────────────
+    resolved_predicted = (
+        predicted_outcome
+        or _env("CHIMERA_PREDICTED_OUTCOME")
+        or _DEFAULT_PREDICTED_OUTCOME
+    )
+
+    # ── falsifiers ──────────────────────────────────────────────────────────
+    raw_falsifiers = falsifiers_json or _env("CHIMERA_FALSIFIERS_JSON")
+    resolved_falsifiers: list[list[str]] = []
+    extra_warnings: list[str] = []
+
+    if raw_falsifiers:
+        resolved_falsifiers = _parse_json_commands(raw_falsifiers, "CHIMERA_FALSIFIERS_JSON")
+    elif from_checks:
+        # Fallback: read checks.toml and use its commands as candidates.
+        checks_path = checks_config_path or Path.cwd() / "chimera-memory.checks.toml"
+        if checks_path.exists():
+            import tomllib as _tomllib
+            with checks_path.open("rb") as fh:
+                cfg = _tomllib.load(fh)
+            checks = cfg.get("checks", [])
+            for check in checks:
+                cmd = check.get("command")
+                if isinstance(cmd, list):
+                    try:
+                        resolved_falsifiers.append(validate_command_list(cmd))
+                    except ClaimError:
+                        pass
+            extra_warnings.append(
+                f"{WARNING_AUTO_FROM_CHECKS}: falsifiers generated from "
+                f"{checks_path.name}. These are broad checks, not targeted falsifiers. "
+                f"Consider providing CHIMERA_FALSIFIERS_JSON for a more specific claim."
+            )
+            extra_warnings.append(
+                f"{WARNING_MISSING_TARGETED_FALSIFIER}: no targeted falsifier was "
+                "explicitly provided. The claim is generated from check-suite commands."
+            )
+        else:
+            raise ClaimError(
+                "No falsifier source: --from-checks requested but "
+                f"{checks_path} does not exist."
+            )
+    else:
+        raise ClaimError(
+            "No falsifier source provided for --auto. "
+            "Set CHIMERA_FALSIFIERS_JSON or pass --falsifiers-json."
+        )
+
+    # ── must_not_break ───────────────────────────────────────────────────────
+    raw_mnb = must_not_break_json or _env("CHIMERA_MUST_NOT_BREAK_JSON")
+    resolved_mnb: list[list[str]] = []
+    if raw_mnb:
+        resolved_mnb = _parse_json_commands(raw_mnb, "CHIMERA_MUST_NOT_BREAK_JSON")
+
+    spec = ClaimSpec(
+        intent=resolved_intent.strip(),
+        scope_path=_normalize_scope(resolved_scope),
+        predicted_outcome=resolved_predicted,
+        falsifiers=resolved_falsifiers,
+        must_not_break=resolved_mnb,
+    )
+    extra_meta: dict[str, Any] = {
+        "auto_lock": True,
+        "from_checks": from_checks,
+        "extra_warnings": extra_warnings,
+        "generated_spec": {
+            "intent": spec.intent,
+            "scope_path": spec.scope_path,
+            "predicted_outcome": spec.predicted_outcome,
+            "falsifiers": [{"command": cmd} for cmd in spec.falsifiers],
+            "must_not_break": [{"command": cmd} for cmd in spec.must_not_break],
+        },
+    }
+    return spec, extra_meta
