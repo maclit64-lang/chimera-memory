@@ -31,10 +31,12 @@ The `.chimera-memory/` ledger directory is always excluded from the change set.
 | `generated_at` | `string` | ISO-8601 UTC |
 | `mode` | `string` | `claim_locked` or `post_hoc` (no pre-edit claims existed) |
 | `diff` | `object` | `{mode, base, head}` |
+| `working_tree_warning` | `string \| null` | Warning message when working-tree mode may include build/cache artefacts. `null` in commit-range mode |
 | `verdict` | `string` | One-line reviewer verdict |
 | `changed_files` | `array[string]` | All changed files in scope of this X-Ray |
 | `settled_claims` | `array[object]` | Per-claim view (see below) |
-| `evidence_dark_files` | `array[string]` | Changed files with no settled claim coverage |
+| `evidence_dark_files` | `array[string]` | Changed files with no settled claim coverage (all, for backward compat) |
+| `evidence_dark_classified` | `object` | Same files split into `source_files` and `likely_cache_or_build` |
 | `weakly_covered_files` | `array[string]` | Changed files touched only by CONTRADICTED/UNSETTLED claims |
 | `scope_drift_files` | `array[string]` | Changed files outside any declared claim scope |
 | `reviewer_focus` | `array[string]` | Ordered manual-review guidance |
@@ -60,7 +62,8 @@ The `.chimera-memory/` ledger directory is always excluded from the change set.
 ### `counts`
 
 `changed_files`, `claims`, `settled_claims`, `validated`, `contradicted`,
-`unsettled`, `evidence_dark`, `scope_drift` — all integers.
+`unsettled`, `evidence_dark`, `evidence_dark_source`, `evidence_dark_cache`,
+`scope_drift` — all integers.
 
 ## Markdown sections
 

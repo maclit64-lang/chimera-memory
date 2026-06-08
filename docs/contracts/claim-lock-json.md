@@ -98,7 +98,28 @@ or `"unknown"`; attribution is never fabricated.
 
 Status precedence: `CONTRADICTED` > `UNSETTLED` > `SCOPE_DRIFT` > `VALIDATED`.
 
-## Safety
+## Dry-run validation
+
+Before sealing, use `claim validate --from-file claim.toml` to check the spec
+without writing anything. The result schema is::
+
+    {"valid": bool, "errors": list[str], "warnings": list[str]}
+
+Hard errors block locking. Warnings are stored on the locked claim and do not
+block locking.
+
+## Warning codes
+
+| Code | Condition |
+|---|---|
+| `BROAD_COMMAND` | A command has no explicit target/path (e.g. bare `mypy`, `ruff check`, `pytest`) |
+| `MISSING_MUST_NOT_BREAK` | No must_not_break checks declared |
+| `BROAD_SCOPE_PATH` | scope_path is `.` (covers entire repo) |
+| `DIRTY_PRE_EDIT_STATE` | Working tree was dirty when the claim was locked |
+| `NO_GIT_PRE_EDIT_STATE` | git was not available at lock time |
+| `WEAK_FALSIFIER` | Falsifier command is a no-op (e.g. `true`, `echo`) |
+
+
 
 - Commands are always `list[str]` executed with `shell=False`.
 - A shell-string command is rejected; the explicit list form is required.

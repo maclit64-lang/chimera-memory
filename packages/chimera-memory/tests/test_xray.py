@@ -165,3 +165,109 @@ def test_cli_xray_generate_json(repo: Path, capsys) -> None:
     assert main(["xray", "generate", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["schema_version"] == 1
+
+
+# ── diff mode + warning fields ────────────────────────────────────────────
+def test_xray_working_tree_mode_sets_warning(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    result = generate_xray(store, root=repo)  # no --base => working_tree
+    assert result["diff"]["mode"] == "working_tree"
+    assert result["working_tree_warning"] is not None
+    assert "working-tree" in result["working_tree_warning"].lower()
+    assert "--base main --head HEAD" in result["working_tree_warning"]
+
+
+def test_xray_commit_range_mode_no_warning(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    result = generate_xray(store, root=repo, base="HEAD", head="HEAD")
+    assert result["diff"]["mode"] == "range"
+    assert result["working_tree_warning"] is None
+
+
+def test_xray_markdown_shows_working_tree_mode_header(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    md = render_markdown(generate_xray(store, root=repo))
+    assert "Working-tree mode" in md
+    assert "--base main --head HEAD" in md
+
+
+def test_xray_markdown_shows_range_mode_header(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    md = render_markdown(generate_xray(store, root=repo, base="HEAD", head="HEAD"))
+    assert "Commit-range mode" in md
+
+
+# ── evidence-dark classification ─────────────────────────────────────────
+def test_xray_classify_evidence_dark_separates_cache_from_source() -> None:
+    from chimera_memory.xray import classify_evidence_dark
+    result = classify_evidence_dark([
+        "packages/cart/checkout.py",
+        "__pycache__/foo.pyc",
+        ".pytest_cache/cacheprovider",
+        "packages/cart/checkout.pyc",
+        ".mypy_cache/3.12/foo.json",
+    ])
+    assert "packages/cart/checkout.py" in result["source_files"]
+    assert "__pycache__/foo.pyc" in result["likely_cache_or_build"]
+    assert ".pytest_cache/cacheprovider" in result["likely_cache_or_build"]
+    assert "packages/cart/checkout.pyc" in result["likely_cache_or_build"]
+    assert ".mypy_cache/3.12/foo.json" in result["likely_cache_or_build"]
+
+
+def test_xray_commit_range_avoids_untracked_cache(repo: Path) -> None:
+    # Add cache files as untracked (not committed, not gitignored)
+    cache_dir = repo / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "foo.cpython-312.pyc").write_bytes(b"fake")
+    store = MemoryStore.from_paths(root=repo)
+    # Working-tree mode picks them up
+    wt = generate_xray(store, root=repo)
+    assert any("__pycache__" in f for f in wt["evidence_dark_files"])
+    # Commit-range mode does NOT (HEAD..HEAD is empty diff)
+    cr = generate_xray(store, root=repo, base="HEAD", head="HEAD")
+    assert not any("__pycache__" in f for f in cr["evidence_dark_files"])
+
+
+def test_xray_json_has_evidence_dark_classified(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    result = generate_xray(store, root=repo)
+    assert "evidence_dark_classified" in result
+    classified = result["evidence_dark_classified"]
+    assert "source_files" in classified
+    assert "likely_cache_or_build" in classified
+
+
+def test_xray_counts_include_cache_breakdown(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    result = generate_xray(store, root=repo)
+    assert "evidence_dark_source" in result["counts"]
+    assert "evidence_dark_cache" in result["counts"]
+
+
+def test_xray_markdown_separates_cache_from_source_in_evidence_dark(repo: Path) -> None:
+    # Add an untracked cache file
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "foo.pyc").write_bytes(b"fake")
+    store = MemoryStore.from_paths(root=repo)
+    rec = lock_claim(store, _spec(), root=repo)
+    settle_claim(store, rec["claim_id"], root=repo)
+    md = render_markdown(generate_xray(store, root=repo))
+    # Cache artefacts should be labelled separately
+    assert "likely build/cache" in md
+
+
+def test_xray_reviewer_focus_mentions_cache_guidance(repo: Path) -> None:
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "foo.pyc").write_bytes(b"fake")
+    store = MemoryStore.from_paths(root=repo)
+    result = generate_xray(store, root=repo)
+    focus_text = " ".join(result["reviewer_focus"])
+    assert "cache" in focus_text.lower() or "--base main --head HEAD" in focus_text
+
+
+def test_xray_post_hoc_suggests_pr_pattern_in_working_tree(repo: Path) -> None:
+    store = MemoryStore.from_paths(root=repo)
+    (repo / "packages" / "cart" / "checkout.py").write_text("x = 2\n")
+    result = generate_xray(store, root=repo)
+    assert "--base main --head HEAD" in result["verdict"] or \
+           "--base main --head HEAD" in result["working_tree_warning"]

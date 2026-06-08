@@ -16,9 +16,20 @@ Honesty contract
 The report shows *settled evidence*, not proof of correctness. Coverage is
 path-based ("covered by declared claim scope"), never "guaranteed tested". Every
 rendered report carries the non-claims caveat.
+
+Recommended agent pattern
+--------------------------
+For PR reviews use commit-range mode to avoid untracked build/cache noise:
+
+    chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
+
+Working-tree mode (default, no ``--base``) includes uncommitted and untracked
+files. This is useful during active development but can surface build/cache
+artefacts as evidence-dark entries.
 """
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -48,6 +59,47 @@ _WEAK_STATUSES = {STATUS_CONTRADICTED, STATUS_UNSETTLED}
 
 CAVEAT = "This report shows settled evidence, not proof of correctness."
 
+_RECOMMENDED_PR_PATTERN = (
+    "chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md"
+)
+
+# Path patterns that strongly suggest build/cache artefacts rather than source.
+# Used to classify evidence-dark files for reviewer clarity.
+_CACHE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(^|/)__pycache__/"),
+    re.compile(r"(^|/)\.pytest_cache/"),
+    re.compile(r"(^|/)\.mypy_cache/"),
+    re.compile(r"(^|/)\.ruff_cache/"),
+    re.compile(r"(^|/)node_modules/"),
+    re.compile(r"(^|/)dist/"),
+    re.compile(r"(^|/)build/"),
+    re.compile(r"(^|/)\.tox/"),
+    re.compile(r"(^|/)\.(venv|env)/"),
+    re.compile(r"\.pyc$"),
+    re.compile(r"\.pyo$"),
+    re.compile(r"\.so$"),
+    re.compile(r"\.egg-info/"),
+]
+
+
+def _is_likely_cache(path: str) -> bool:
+    norm = path.replace("\\", "/")
+    return any(p.search(norm) for p in _CACHE_PATTERNS)
+
+
+def classify_evidence_dark(files: list[str]) -> dict[str, list[str]]:
+    """Split evidence-dark files into source and likely-cache buckets.
+
+    Returns ``{"source_files": [...], "likely_cache_or_build": [...]}``.
+    This lets the reviewer immediately see whether noise is real source
+    or local build/cache artefacts.
+    """
+    source: list[str] = []
+    cache: list[str] = []
+    for f in files:
+        (cache if _is_likely_cache(f) else source).append(f)
+    return {"source_files": source, "likely_cache_or_build": cache}
+
 
 def generate_xray(
     store: MemoryStore,
@@ -61,7 +113,11 @@ def generate_xray(
 
     Change set resolution:
       * If ``base`` is given, diff ``base``..(``head`` or ``HEAD``).
-      * Otherwise, use working-tree changes vs ``HEAD`` (local uncommitted work).
+        This is the recommended PR-review pattern: avoids untracked/unstaged
+        build/cache artefacts.
+      * Otherwise, use working-tree changes vs ``HEAD`` (local uncommitted work
+        including untracked files). Useful during active dev but can include
+        cache artefacts as evidence-dark entries.
     """
     root = root or Path.cwd()
     generated_at = (now or datetime.now(UTC)).isoformat()
@@ -72,11 +128,17 @@ def generate_xray(
         diff_mode = "range"
         diff_base = base
         diff_head = effective_head
+        working_tree_warning = None
     else:
         changed_files = git_changed_files_since("HEAD", root)
         diff_mode = "working_tree"
         diff_base = git_head_sha(root) or "HEAD"
         diff_head = "WORKTREE"
+        working_tree_warning = (
+            "Working-tree mode includes uncommitted and untracked files. "
+            "Build/cache artefacts may appear as evidence-dark entries. "
+            f"For PR reviews use: {_RECOMMENDED_PR_PATTERN}"
+        )
     changed_files = exclude_ledger_paths(changed_files)
 
     claims = store.latest_claim_locks()
@@ -126,9 +188,9 @@ def generate_xray(
     evidence_dark = sorted(
         f for f in changed_files if f not in covered_files and f not in weakly_covered
     )
+    evidence_dark_classified = classify_evidence_dark(evidence_dark)
 
-    # Scope drift across the change set: files outside a claim's scope that a
-    # settle run flagged, restricted to files actually in this change set.
+    # Scope drift across the change set.
     drift_set: set[str] = set()
     for claim in settled_claims:
         for f in claim.get("settlement", {}).get("scope_drift_files", []):
@@ -143,13 +205,16 @@ def generate_xray(
         post_hoc=post_hoc,
         changed_count=len(changed_files),
         evidence_dark=evidence_dark,
+        evidence_dark_classified=evidence_dark_classified,
         scope_drift=scope_drift,
         contradicted=contradicted,
         unsettled=unsettled,
+        diff_mode=diff_mode,
     )
 
     reviewer_focus = _build_reviewer_focus(
-        evidence_dark=evidence_dark,
+        evidence_dark_source=evidence_dark_classified["source_files"],
+        evidence_dark_cache=evidence_dark_classified["likely_cache_or_build"],
         scope_drift=scope_drift,
         contradicted=contradicted,
         covered_files=sorted(covered_files),
@@ -164,10 +229,12 @@ def generate_xray(
             "base": diff_base,
             "head": diff_head,
         },
+        "working_tree_warning": working_tree_warning,
         "verdict": verdict,
         "changed_files": changed_files,
         "settled_claims": settled_view,
         "evidence_dark_files": evidence_dark,
+        "evidence_dark_classified": evidence_dark_classified,
         "weakly_covered_files": sorted(weakly_covered),
         "scope_drift_files": scope_drift,
         "reviewer_focus": reviewer_focus,
@@ -181,6 +248,10 @@ def generate_xray(
             "contradicted": len(contradicted),
             "unsettled": len(unsettled),
             "evidence_dark": len(evidence_dark),
+            "evidence_dark_source": len(evidence_dark_classified["source_files"]),
+            "evidence_dark_cache": len(
+                evidence_dark_classified["likely_cache_or_build"]
+            ),
             "scope_drift": len(scope_drift),
         },
         "caveat": CAVEAT,
@@ -196,21 +267,37 @@ def _build_verdict(
     post_hoc: bool,
     changed_count: int,
     evidence_dark: list[str],
+    evidence_dark_classified: dict[str, list[str]],
     scope_drift: list[str],
     contradicted: list[dict[str, Any]],
     unsettled: list[dict[str, Any]],
+    diff_mode: str,
 ) -> str:
+    dark_source = evidence_dark_classified["source_files"]
+    dark_cache = evidence_dark_classified["likely_cache_or_build"]
+
     if post_hoc:
+        suffix = (
+            " Use `--base main --head HEAD` for PR reviews."
+            if diff_mode == "working_tree"
+            else ""
+        )
         return (
             "Post-hoc review: no pre-edit claims were locked, so none of the "
             f"{changed_count} changed file(s) carry settled claim evidence. "
-            "Review all changes manually."
+            f"Review all changes manually.{suffix}"
         )
     problems: list[str] = []
     if contradicted:
         problems.append(f"{len(contradicted)} contradicted claim(s)")
-    if evidence_dark:
-        problems.append(f"{len(evidence_dark)} evidence-dark file(s)")
+    if dark_source:
+        problems.append(f"{len(dark_source)} evidence-dark source file(s)")
+    if dark_cache:
+        problems.append(
+            f"{len(dark_cache)} likely-cache/build file(s) — noise from working-tree mode"
+            if diff_mode == "working_tree"
+            else f"{len(dark_cache)} likely-cache/build file(s)"
+        )
     if scope_drift:
         problems.append(f"{len(scope_drift)} scope drift warning(s)")
     if unsettled:
@@ -225,7 +312,8 @@ def _build_verdict(
 
 def _build_reviewer_focus(
     *,
-    evidence_dark: list[str],
+    evidence_dark_source: list[str],
+    evidence_dark_cache: list[str],
     scope_drift: list[str],
     contradicted: list[dict[str, Any]],
     covered_files: list[str],
@@ -238,10 +326,15 @@ def _build_reviewer_focus(
         )
     for f in scope_drift:
         focus.append(f"Review `{f}` manually — it changed outside the declared scope.")
-    for f in evidence_dark:
-        if f in scope_drift:
-            continue
-        focus.append(f"Review `{f}` manually — no settled claim covers it.")
+    for f in evidence_dark_source:
+        if f not in scope_drift:
+            focus.append(f"Review `{f}` manually — no settled claim covers it.")
+    if evidence_dark_cache:
+        focus.append(
+            f"Ignore the {len(evidence_dark_cache)} likely-cache/build file(s) listed "
+            "under Evidence-Dark — they are local artefacts, not source changes. "
+            f"Use `--base main --head HEAD` to exclude them: {_RECOMMENDED_PR_PATTERN}"
+        )
     for f in covered_files:
         focus.append(
             f"Skim `{f}`; it has a settled claim, but this is not proof of correctness."
@@ -258,27 +351,69 @@ def render_markdown(xray: dict[str, Any]) -> str:
     """Render the X-Ray as the PR_EVIDENCE.md product artifact."""
     lines: list[str] = ["# PR Evidence — Merge X-Ray", ""]
 
+    # Diff mode header — always show so reviewer knows what they're reading.
+    diff = xray.get("diff", {})
+    diff_mode = diff.get("mode", "unknown")
+    diff_base = diff.get("base", "?")
+    diff_head = diff.get("head", "?")
+    if diff_mode == "range":
+        lines += [
+            f"> **Commit-range mode** — diff `{diff_base}`..`{diff_head}`.",
+            "> Untracked/unstaged files are excluded. Recommended for PR reviews.",
+            "",
+        ]
+    else:
+        lines += [
+            "> **Working-tree mode** — includes uncommitted and untracked files.",
+            "> Build/cache artefacts may appear as evidence-dark entries.",
+            f"> For PR reviews use: `{_RECOMMENDED_PR_PATTERN}`",
+            "",
+        ]
+
+    # Warning box if present
+    warning = xray.get("working_tree_warning")
+    if warning and diff_mode == "working_tree":
+        lines += [f"> ⚠️  {warning}", ""]
+
     lines += ["## Verdict", "", xray["verdict"], ""]
 
     # Settled claims
     lines += ["## Settled Claims", ""]
-    settled = [
-        c for c in xray["settled_claims"] if c["status"] != STATUS_LOCKED
-    ]
+    settled = [c for c in xray["settled_claims"] if c["status"] != STATUS_LOCKED]
     if not settled:
         lines += ["_No settled claims for this change set._", ""]
     else:
         for claim in settled:
             lines += _render_claim_block(claim)
 
-    # Evidence-dark
+    # Evidence-dark — split by classification
     lines += ["## Evidence-Dark Changes", ""]
-    if xray["evidence_dark_files"]:
-        lines += ["These files changed but have no settled claim coverage:", ""]
-        lines += [f"- `{f}`" for f in xray["evidence_dark_files"]]
-        lines += [""]
-    else:
+    classified = xray.get("evidence_dark_classified", {})
+    dark_source = classified.get("source_files", xray.get("evidence_dark_files", []))
+    dark_cache = classified.get("likely_cache_or_build", [])
+
+    if not dark_source and not dark_cache:
         lines += ["_No evidence-dark files._", ""]
+    else:
+        if dark_source:
+            lines += [
+                "These source files changed but have no settled claim coverage:",
+                "",
+            ]
+            lines += [f"- `{f}`" for f in dark_source]
+            lines += [""]
+        if dark_cache:
+            lines += [
+                "These entries are likely build/cache artefacts (not source code):",
+                "",
+            ]
+            lines += [f"- `{f}`" for f in dark_cache]
+            if diff_mode == "working_tree":
+                lines += [
+                    "",
+                    f"> To exclude cache artefacts, use: `{_RECOMMENDED_PR_PATTERN}`",
+                ]
+            lines += [""]
 
     # Scope drift
     lines += ["## Scope Drift", ""]
@@ -304,9 +439,7 @@ def render_markdown(xray: dict[str, Any]) -> str:
         for claim in weak_or_unsettled:
             warnings = claim.get("quality", {}).get("warnings", [])
             warn_str = f" ({', '.join(warnings)})" if warnings else ""
-            lines += [
-                f"- **{claim['status']}** — {claim['intent']}{warn_str}",
-            ]
+            lines += [f"- **{claim['status']}** — {claim['intent']}{warn_str}"]
         if weakly_covered:
             lines += ["", "Files touched only by weak/unsettled claims:", ""]
             lines += [f"- `{f}`" for f in weakly_covered]
@@ -354,3 +487,4 @@ def _fmt_cmd(cmd: Any) -> str:
     if isinstance(cmd, list):
         return " ".join(str(part) for part in cmd)
     return str(cmd)
+
