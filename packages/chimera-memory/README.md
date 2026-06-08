@@ -42,6 +42,47 @@ Compare two runs:
 chimera-memory bundle diff ./old-run/receipt ./new-run/receipt
 ```
 
+## AI PR Evidence / Merge X-Ray
+
+Chimera can now produce local PR evidence reports for AI-assisted coding work.
+
+A claim can be locked before edits with an intent, scope, falsifier, and
+must-not-break checks. After the work, Chimera settles that claim against the
+pre-committed checks and generates a Merge X-Ray showing which changed files
+have settled evidence and which remain evidence-dark.
+
+```bash
+# 1. Lock a claim BEFORE editing (sealed, scope-bound)
+chimera-memory claim lock --from-file claim.toml
+
+# 2. Do the work, then settle against the pre-committed checks only
+chimera-memory claim settle <claim_id>
+
+# 3. Generate the PR evidence report
+chimera-memory xray generate --output PR_EVIDENCE.md
+```
+
+Example `claim.toml`:
+
+```toml
+intent = "fix checkout null dereference"
+scope_path = "packages/cart"
+predicted_outcome = "all pass"
+
+[[falsifiers]]
+command = ["pytest", "tests/test_checkout.py::test_empty_cart"]
+
+[[must_not_break]]
+command = ["pytest", "tests/test_cart.py"]
+```
+
+The Merge X-Ray (`PR_EVIDENCE.md`) shows the verdict, settled claims,
+evidence-dark changes, scope drift, and a reviewer-focus list. It reports
+**settled evidence, not proof of correctness** — coverage is path-based
+("covered by declared claim scope"), never a guarantee that code is tested or
+correct. See [docs/examples/claim-locked-coding.md](../../docs/examples/claim-locked-coding.md)
+and [docs/examples/pr-evidence-example.md](../../docs/examples/pr-evidence-example.md).
+
 ## Quickstart (5 commands)
 
 ```bash

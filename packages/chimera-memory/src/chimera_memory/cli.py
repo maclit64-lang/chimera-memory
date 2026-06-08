@@ -1038,6 +1038,104 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     checks_run.set_defaults(command="checks")
 
+    # ── claim (claim-locked evidence) ──────────────────────────────
+    claim_parser = subparsers.add_parser(
+        "claim",
+        help="Claim-locked coding — seal a scope-bound claim before edits, "
+        "then settle it against pre-committed checks.",
+        description=(
+            "A claim records intent, a declared scope path, a pre-committed\n"
+            "falsifier, and optional must-not-break checks BEFORE editing.\n"
+            "Settlement runs only those sealed checks — never a substitute.\n\n"
+            "This produces settled evidence, not proof of correctness."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    claim_sub = claim_parser.add_subparsers(dest="claim_command")
+
+    claim_lock = claim_sub.add_parser(
+        "lock", help="Seal a claim before editing (LOCKED)."
+    )
+    claim_lock.add_argument(
+        "--from-file", dest="claim_from_file", metavar="PATH",
+        help="Load the claim from a claim.toml file (preferred).",
+    )
+    claim_lock.add_argument("--intent", dest="claim_intent", help="What you intend to do.")
+    claim_lock.add_argument(
+        "--scope-path", dest="claim_scope_path",
+        help="Declared scope path the claim covers.",
+    )
+    claim_lock.add_argument(
+        "--predicted-outcome", dest="claim_predicted", default="all pass",
+        help="Predicted outcome (default: 'all pass').",
+    )
+    claim_lock.add_argument(
+        "--falsifier", dest="claim_falsifiers", action="append", metavar="CMD",
+        help="Pre-committed falsifier command, quoted (repeatable). "
+        "Parsed safely into a list; shell metacharacters are rejected.",
+    )
+    claim_lock.add_argument(
+        "--must-not-break", dest="claim_must_not_break", action="append", metavar="CMD",
+        help="Must-not-break command, quoted (repeatable).",
+    )
+    claim_lock.add_argument("--memory-dir")
+    claim_lock.add_argument("--json", action="store_true", help="Emit the record as JSON")
+    claim_lock.set_defaults(command="claim", claim_command="lock")
+
+    claim_list = claim_sub.add_parser("list", help="List locked/settled claims.")
+    claim_list.add_argument("--memory-dir")
+    claim_list.add_argument("--json", action="store_true")
+    claim_list.set_defaults(command="claim", claim_command="list")
+
+    claim_show = claim_sub.add_parser("show", help="Show one claim by id.")
+    claim_show.add_argument("claim_id", help="Claim id (clm_...)")
+    claim_show.add_argument("--memory-dir")
+    claim_show.add_argument("--json", action="store_true")
+    claim_show.set_defaults(command="claim", claim_command="show")
+
+    claim_settle = claim_sub.add_parser(
+        "settle", help="Settle a claim against its sealed checks only."
+    )
+    claim_settle.add_argument("claim_id", help="Claim id (clm_...)")
+    claim_settle.add_argument("--memory-dir")
+    claim_settle.add_argument("--json", action="store_true")
+    claim_settle.set_defaults(command="claim", claim_command="settle")
+
+    claim_report = claim_sub.add_parser(
+        "report", help="Render a single-claim evidence report."
+    )
+    claim_report.add_argument("claim_id", help="Claim id (clm_...)")
+    claim_report.add_argument("--memory-dir")
+    claim_report.add_argument("--json", action="store_true")
+    claim_report.set_defaults(command="claim", claim_command="report")
+
+    # ── xray (Merge X-Ray / PR_EVIDENCE.md) ────────────────────────
+    xray_parser = subparsers.add_parser(
+        "xray",
+        help="Generate a Merge X-Ray (PR_EVIDENCE.md) from claims + git diff.",
+    )
+    xray_sub = xray_parser.add_subparsers(dest="xray_command")
+    xray_generate = xray_sub.add_parser(
+        "generate", help="Generate the PR evidence report for the current changes."
+    )
+    xray_generate.add_argument(
+        "--base", dest="xray_base",
+        help="Base ref to diff from (e.g. main). Default: working-tree vs HEAD.",
+    )
+    xray_generate.add_argument(
+        "--head", dest="xray_head",
+        help="Head ref (default: HEAD when --base is given).",
+    )
+    xray_generate.add_argument(
+        "--output", dest="xray_output", metavar="PATH",
+        help="Write Markdown report to this file (e.g. PR_EVIDENCE.md).",
+    )
+    xray_generate.add_argument("--memory-dir")
+    xray_generate.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON instead of Markdown"
+    )
+    xray_generate.set_defaults(command="xray", xray_command="generate")
+
     return parser
 
 
@@ -1114,6 +1212,11 @@ def main(argv: list[str] | None = None) -> int:
         return _bundle(parsed)
     if parsed.command == "checks":
         return _checks(parsed)
+
+    if parsed.command == "claim":
+        return _claim(parsed)
+    if parsed.command == "xray":
+        return _xray(parsed)
 
     if parsed.command in ("record", "settle"):
         print(
@@ -3059,6 +3162,206 @@ command = ["python", "--version"]
 # name = "ruff"
 # command = ["ruff", "check", "src/"]
 """
+
+
+def _claim(parsed: argparse.Namespace) -> int:
+    """Handle claim lock/list/show/settle/report subcommands."""
+    import sys
+
+    from chimera_memory.claim_lock import (
+        ClaimError,
+        ClaimSpec,
+        load_spec_from_toml,
+        lock_claim,
+        safe_command_from_string,
+        settle_claim,
+    )
+
+    sub = getattr(parsed, "claim_command", None)
+    root = Path.cwd()
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=root)
+    )
+    if not store.memory_dir.exists():
+        store.initialize()
+
+    if sub == "lock":
+        try:
+            spec = _build_claim_spec(parsed, safe_command_from_string, ClaimSpec,
+                                     load_spec_from_toml)
+            record = lock_claim(store, spec, root=root)
+        except ClaimError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if parsed.json:
+            print(json.dumps(record, indent=2, sort_keys=True))
+        else:
+            print(f"Locked claim {record['claim_id']}")
+            print(f"  intent:  {record['intent']}")
+            print(f"  scope:   {record['scope_path']}")
+            print(f"  quality: {record['quality']['claim_quality']}")
+            warnings = record["quality"]["warnings"]
+            if warnings:
+                print(f"  warnings: {', '.join(warnings)}")
+            print(f"\nNext: chimera-memory claim settle {record['claim_id']}")
+        return 0
+
+    if sub == "list":
+        claims = store.latest_claim_locks()
+        if parsed.json:
+            print(json.dumps(claims, indent=2, sort_keys=True))
+            return 0
+        if not claims:
+            print("No claims locked yet. Run: chimera-memory claim lock --from-file claim.toml")
+            return 0
+        for c in claims:
+            status = c.get("settlement", {}).get("status", "LOCKED")
+            print(f"{c['claim_id']}  {status:<12}  {c.get('intent', '')}")
+        return 0
+
+    if sub in ("show", "report"):
+        claim_id = parsed.claim_id
+        found = store.latest_claim_lock(claim_id)
+        if found is None:
+            print(f"error: no claim with id {claim_id!r}", file=sys.stderr)
+            return 1
+        if parsed.json:
+            print(json.dumps(found, indent=2, sort_keys=True))
+        else:
+            print(_format_claim_text(found))
+        return 0
+
+    if sub == "settle":
+        try:
+            record = settle_claim(store, parsed.claim_id, root=root)
+        except ClaimError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        status = record["settlement"]["status"]
+        if parsed.json:
+            print(json.dumps(record, indent=2, sort_keys=True))
+        else:
+            print(_format_claim_text(record))
+        # CONTRADICTED settles cleanly but signals a failed check via exit code.
+        return 0 if status != "CONTRADICTED" else 1
+
+    print("Usage: chimera-memory claim {lock,list,show,settle,report}", file=sys.stderr)
+    return 2
+
+
+def _build_claim_spec(parsed, safe_command_from_string, ClaimSpec, load_spec_from_toml):
+    """Build a ClaimSpec from --from-file or flag-based inputs."""
+    from chimera_memory.claim_lock import ClaimError, _normalize_scope
+
+    from_file = getattr(parsed, "claim_from_file", None)
+    if from_file:
+        return load_spec_from_toml(Path(from_file))
+
+    intent = getattr(parsed, "claim_intent", None)
+    scope_path = getattr(parsed, "claim_scope_path", None)
+    if not intent or not scope_path:
+        raise ClaimError(
+            "provide --from-file, or both --intent and --scope-path"
+        )
+    falsifiers = [
+        safe_command_from_string(s) for s in (getattr(parsed, "claim_falsifiers", None) or [])
+    ]
+    must_not_break = [
+        safe_command_from_string(s)
+        for s in (getattr(parsed, "claim_must_not_break", None) or [])
+    ]
+    return ClaimSpec(
+        intent=intent.strip(),
+        scope_path=_normalize_scope(scope_path),
+        predicted_outcome=getattr(parsed, "claim_predicted", "all pass"),
+        falsifiers=falsifiers,
+        must_not_break=must_not_break,
+    )
+
+
+def _format_claim_text(record: dict[str, Any]) -> str:
+    lines = [
+        f"Claim {record['claim_id']}",
+        f"  intent:    {record.get('intent', '')}",
+        f"  scope:     {record.get('scope_path', '')}",
+        f"  predicted: {record.get('predicted_outcome', '')}",
+        f"  status:    {record.get('settlement', {}).get('status', 'LOCKED')}",
+    ]
+    quality = record.get("quality", {})
+    lines.append(f"  quality:   {quality.get('claim_quality', 'unknown')}")
+    if quality.get("warnings"):
+        lines.append(f"  warnings:  {', '.join(quality['warnings'])}")
+    falsifiers = record.get("falsifiers", [])
+    if falsifiers:
+        lines.append("  falsifiers:")
+        for e in falsifiers:
+            lines.append(f"    - {' '.join(e.get('command', []))}")
+    must = record.get("must_not_break", [])
+    if must:
+        lines.append("  must-not-break:")
+        for e in must:
+            lines.append(f"    - {' '.join(e.get('command', []))}")
+    settlement = record.get("settlement", {})
+    if settlement.get("settled_at"):
+        changed = settlement.get("changed_files", [])
+        drift = settlement.get("scope_drift_files", [])
+        lines.append(f"  settled_at: {settlement['settled_at']}")
+        lines.append(f"  changed_files: {len(changed)}")
+        if drift:
+            lines.append(f"  scope_drift_files: {', '.join(drift)}")
+        for cr in settlement.get("commands", []):
+            cmd = " ".join(cr.get("command", []))
+            lines.append(f"    [{cr.get('outcome')}] {cmd}")
+    lines.append("")
+    lines.append("Note: this is settled evidence, not proof of correctness.")
+    return "\n".join(lines)
+
+
+def _xray(parsed: argparse.Namespace) -> int:
+    """Handle xray generate."""
+    import sys
+
+    from chimera_memory.xray import generate_xray, render_markdown
+
+    sub = getattr(parsed, "xray_command", None)
+    if sub != "generate":
+        print("Usage: chimera-memory xray generate", file=sys.stderr)
+        return 2
+
+    root = Path.cwd()
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=root)
+    )
+    if not store.memory_dir.exists():
+        store.initialize()
+
+    result = generate_xray(
+        store,
+        root=root,
+        base=getattr(parsed, "xray_base", None),
+        head=getattr(parsed, "xray_head", None),
+    )
+
+    if parsed.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    markdown = render_markdown(result)
+    output = getattr(parsed, "xray_output", None)
+    if output:
+        out_path = Path(output)
+        out_path.write_text(markdown, encoding="utf-8")
+        print(f"Wrote {out_path}")
+        print(f"\n{result['verdict']}")
+    else:
+        print(markdown)
+    return 0
 
 
 def _checks(parsed: argparse.Namespace) -> int:

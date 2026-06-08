@@ -1,6 +1,6 @@
 [project]
 name = "chimera-memory-types"
-version = "0.21.0"
+version = "0.22.0"
 description = "Minimal schema types for chimera-memory — claims, settlements, evidence refs, and temporal seals"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
