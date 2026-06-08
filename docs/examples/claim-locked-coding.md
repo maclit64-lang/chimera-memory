@@ -6,6 +6,24 @@ falsifiable, scope-bound evidence primitive — not a correctness proof.
 
 > This produces **settled evidence, not proof of correctness**.
 
+## 0. Validate before locking (optional but recommended)
+
+Before sealing a claim, run a dry-run validation:
+
+```bash
+chimera-memory claim validate --from-file claim.toml
+```
+
+This checks schema, command shape, and reports warnings without writing anything
+to `.chimera-memory/`. Hard errors (missing intent, non-list command, empty
+command) must be fixed before locking. Warnings (broad commands, missing
+must-not-break) are informational and do not block locking.
+
+```bash
+# also available as JSON
+chimera-memory claim validate --from-file claim.toml --json
+```
+
 ## 1. Lock a claim before editing
 
 Write a `claim.toml`:
@@ -16,14 +34,18 @@ scope_path = "packages/cart"
 predicted_outcome = "all pass"
 
 [[falsifiers]]
-command = ["pytest", "tests/test_checkout.py::test_empty_cart"]
+command = ["uv", "run", "pytest", "tests/test_checkout.py::test_empty_cart"]
 
 [[must_not_break]]
-command = ["pytest", "tests/test_cart.py"]
+command = ["uv", "run", "pytest", "tests/test_cart.py"]
 
 [[must_not_break]]
-command = ["ruff", "check", "packages/cart"]
+command = ["uv", "run", "ruff", "check", "packages/cart"]
 ```
+
+> Use explicit target paths in commands. `["mypy"]` or `["ruff", "check"]`
+> without targets are valid but trigger a `BROAD_COMMAND` warning because their
+> behaviour is config-dependent. Explicit paths make the evidence clearer.
 
 Lock it:
 

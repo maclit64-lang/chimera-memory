@@ -1109,6 +1109,26 @@ def _build_parser() -> argparse.ArgumentParser:
     claim_report.add_argument("--json", action="store_true")
     claim_report.set_defaults(command="claim", claim_command="report")
 
+    claim_validate = claim_sub.add_parser(
+        "validate",
+        help="Dry-run validate a claim.toml without locking or writing anything.",
+        description=(
+            "Parses and validates a claim file. Reports hard errors and warnings.\n"
+            "Does not create a claim record or write to .chimera-memory/.\n\n"
+            "Exit 0: no hard errors (warnings are informational only).\n"
+            "Exit 1: hard errors that would prevent locking."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    claim_validate.add_argument(
+        "--from-file", dest="claim_from_file", required=True, metavar="PATH",
+        help="Path to claim.toml to validate.",
+    )
+    claim_validate.add_argument(
+        "--json", action="store_true", help="Emit result as JSON."
+    )
+    claim_validate.set_defaults(command="claim", claim_command="validate")
+
     # ── xray (Merge X-Ray / PR_EVIDENCE.md) ────────────────────────
     xray_parser = subparsers.add_parser(
         "xray",
@@ -3188,6 +3208,39 @@ def _claim(parsed: argparse.Namespace) -> int:
     if not store.memory_dir.exists():
         store.initialize()
 
+    if sub == "validate":
+        from chimera_memory.claim_lock import validate_claim_spec
+
+        try:
+            spec = _build_claim_spec(parsed, safe_command_from_string, ClaimSpec,
+                                     load_spec_from_toml)
+        except ClaimError as exc:
+            if parsed.json:
+                print(json.dumps({"valid": False, "errors": [str(exc)], "warnings": []},
+                                 indent=2))
+            else:
+                print(f"error: {exc}", file=sys.stderr)
+            return 1
+        result = validate_claim_spec(spec, root=root)
+        if parsed.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            if result["errors"]:
+                for e in result["errors"]:
+                    print(f"error: {e}", file=sys.stderr)
+            if result["warnings"]:
+                for w in result["warnings"]:
+                    print(f"warning: {w}")
+            if result["valid"]:
+                if not result["warnings"]:
+                    print("claim.toml is valid with no warnings.")
+                else:
+                    print(
+                        f"claim.toml is valid with {len(result['warnings'])} warning(s). "
+                        "Warnings do not block locking."
+                    )
+        return 0 if result["valid"] else 1
+
     if sub == "lock":
         try:
             spec = _build_claim_spec(parsed, safe_command_from_string, ClaimSpec,
@@ -3205,7 +3258,8 @@ def _claim(parsed: argparse.Namespace) -> int:
             print(f"  quality: {record['quality']['claim_quality']}")
             warnings = record["quality"]["warnings"]
             if warnings:
-                print(f"  warnings: {', '.join(warnings)}")
+                for w in warnings:
+                    print(f"  warning: {w}")
             print(f"\nNext: chimera-memory claim settle {record['claim_id']}")
         return 0
 

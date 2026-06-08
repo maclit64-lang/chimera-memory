@@ -325,8 +325,21 @@ def lock_claim(
     root: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Seal a claim before edits and append a ``LOCKED`` record. Returns it."""
+    """Seal a claim before edits and append a ``LOCKED`` record. Returns it.
+
+    Runs :func:`validate_claim_spec` before sealing. Hard errors raise
+    :class:`ClaimError`. Warnings are stored in the claim's quality block.
+    """
     root = root or Path.cwd()
+
+    # Validate before sealing — hard errors prevent locking.
+    validation = validate_claim_spec(spec, root=root, check_git_state=False)
+    if not validation["valid"]:
+        raise ClaimError(
+            "claim spec has errors:\n"
+            + "\n".join(f"  - {e}" for e in validation["errors"])
+        )
+    validation_warnings: list[str] = validation["warnings"]
     created_at = (now or datetime.now(UTC)).isoformat()
     claim_id = "clm_" + uuid.uuid4().hex[:16]
 
@@ -334,10 +347,21 @@ def lock_claim(
     git_head = git_head_sha(root)
 
     quality, warnings = assess_quality(spec)
+    # Merge in validation_warnings (broad-command, missing-must-not-break, etc.)
+    # avoiding duplicates while preserving order.
+    seen: set[str] = set(warnings)
+    for w in validation_warnings:
+        if w not in seen:
+            warnings = [*warnings, w]
+            seen.add(w)
     if dirty_state == "dirty":
-        warnings = [*warnings, WARNING_DIRTY_PRE_EDIT]
+        dirty_warning = WARNING_DIRTY_PRE_EDIT
+        if dirty_warning not in seen:
+            warnings = [*warnings, dirty_warning]
     if git_head is None:
-        warnings = [*warnings, WARNING_NO_GIT]
+        no_git_warning = WARNING_NO_GIT
+        if no_git_warning not in seen:
+            warnings = [*warnings, no_git_warning]
 
     record: dict[str, Any] = {
         "schema_version": CLAIM_LOCK_SCHEMA_VERSION,
@@ -506,3 +530,132 @@ def _run_check(cmd: list[str], *, role: str) -> dict[str, Any]:
         stderr_excerpt=result.stderr_excerpt,
     )
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Claim contract validation (dry-run)
+# ---------------------------------------------------------------------------
+
+# Tools where omitting an explicit target/path makes the command's behaviour
+# repo-config-dependent. We warn (never block) because some repos intentionally
+# rely on tool-level defaults.
+_BROAD_TOOL_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    # bare form
+    (("mypy",), "mypy"),
+    (("ruff",), "ruff"),
+    (("ruff", "check"), "ruff check"),
+    (("pytest",), "pytest"),
+    # uv run <tool>
+    (("uv", "run", "mypy"), "uv run mypy"),
+    (("uv", "run", "ruff"), "uv run ruff"),
+    (("uv", "run", "ruff", "check"), "uv run ruff check"),
+    (("uv", "run", "pytest"), "uv run pytest"),
+    # python -m <tool>
+    (("python", "-m", "mypy"), "python -m mypy"),
+    (("python", "-m", "pytest"), "python -m pytest"),
+    (("python3", "-m", "mypy"), "python3 -m mypy"),
+    (("python3", "-m", "pytest"), "python3 -m pytest"),
+]
+
+WARNING_BROAD_COMMAND = "BROAD_COMMAND"
+WARNING_MISSING_MUST_NOT_BREAK = "MISSING_MUST_NOT_BREAK"
+WARNING_BROAD_SCOPE = "BROAD_SCOPE_PATH"
+WARNING_DIRTY_STATE = "DIRTY_PRE_EDIT_STATE"
+WARNING_NO_GIT = "NO_GIT_PRE_EDIT_STATE"
+
+
+def _check_command_breadth(cmd: list[str]) -> str | None:
+    """Return a warning string if ``cmd`` matches a known broad-tool pattern."""
+    for pattern, label in _BROAD_TOOL_PATTERNS:
+        if tuple(cmd) == pattern:
+            return (
+                f"command `{' '.join(cmd)}` may be broad or config-dependent because "
+                "it has no explicit target/path. This may be valid for this repo, but "
+                "explicit paths make claim settlement more reviewable. "
+                f"Consider: `{label} <path/to/target>`."
+            )
+    return None
+
+
+def validate_claim_spec(
+    spec: ClaimSpec,
+    *,
+    root: Path | None = None,
+    check_git_state: bool = True,
+) -> dict[str, Any]:
+    """Dry-run validation of a :class:`ClaimSpec`.
+
+    Returns a result dict with shape::
+
+        {
+          "valid": bool,         # True when no *hard* errors
+          "errors": list[str],   # Hard errors — block locking
+          "warnings": list[str], # Soft warnings — stored on lock, don't block
+        }
+
+    Does **not** write to ``.chimera-memory`` or create any claim record.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Hard errors
+    if not spec.intent.strip():
+        errors.append("intent must be a non-empty string")
+    if not spec.scope_path.strip() or spec.scope_path == "":
+        errors.append("scope_path must be a non-empty string")
+    if not spec.falsifiers:
+        errors.append("at least one [[falsifiers]] entry with a command list is required")
+    for i, cmd in enumerate(spec.falsifiers):
+        if not isinstance(cmd, list) or not cmd:
+            errors.append(f"falsifiers[{i}].command must be a non-empty list of strings")
+        elif not all(isinstance(t, str) for t in cmd):
+            errors.append(f"falsifiers[{i}].command tokens must all be strings")
+    for i, cmd in enumerate(spec.must_not_break):
+        if not isinstance(cmd, list) or not cmd:
+            errors.append(
+                f"must_not_break[{i}].command must be a non-empty list of strings"
+            )
+        elif not all(isinstance(t, str) for t in cmd):
+            errors.append(f"must_not_break[{i}].command tokens must all be strings")
+
+    # Warnings
+    if spec.scope_path in (".", ""):
+        warnings.append(
+            f"{WARNING_BROAD_SCOPE}: scope_path '.' covers the entire repo. "
+            "Narrowing the scope makes scope-drift detection more useful."
+        )
+    if not spec.must_not_break:
+        warnings.append(
+            f"{WARNING_MISSING_MUST_NOT_BREAK}: no must_not_break checks declared. "
+            "Adding regression checks strengthens the evidence record."
+        )
+
+    # Per-command breadth warnings
+    for cmd in spec.falsifiers:
+        msg = _check_command_breadth(cmd)
+        if msg:
+            warnings.append(f"{WARNING_BROAD_COMMAND}: {msg}")
+    for cmd in spec.must_not_break:
+        msg = _check_command_breadth(cmd)
+        if msg:
+            warnings.append(f"{WARNING_BROAD_COMMAND}: {msg}")
+
+    # Git state (informational only — soft warning)
+    if check_git_state and not errors:
+        resolve_root = root or Path.cwd()
+        dirty_state, _ = git_dirty_files(resolve_root)
+        if dirty_state == "dirty":
+            warnings.append(
+                f"{WARNING_DIRTY_STATE}: working tree is dirty at validation time. "
+                "Consider locking the claim from a clean state for the cleanest evidence."
+            )
+        elif dirty_state == "unknown":
+            warnings.append(
+                f"{WARNING_NO_GIT}: git is not available or this is not a git repo."
+            )
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
