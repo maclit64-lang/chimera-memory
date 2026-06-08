@@ -1217,6 +1217,52 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mcp_serve.set_defaults(command="mcp", mcp_command="serve")
 
+    # ── hooks (Claude Code hook installer) ─────────────────────────
+    hooks_parser = subparsers.add_parser(
+        "hooks",
+        help="Install or manage Claude Code hooks for automatic claim-locked evidence.",
+    )
+    hooks_sub = hooks_parser.add_subparsers(dest="hooks_command")
+
+    hooks_install = hooks_sub.add_parser(
+        "install",
+        help="Install Chimera hook scripts and patch .claude/settings.json.",
+        description=(
+            "Writes two hook scripts into .claude/hooks/ and registers them\n"
+            "in .claude/settings.json:\n\n"
+            "  UserPromptSubmit — injects a one-time reminder about claim auto-lock\n"
+            "  Stop             — settles the open claim and generates PR_EVIDENCE.md\n\n"
+            "After installation, a Claude Code session will automatically:\n"
+            "  1. Remind you to set CHIMERA_INTENT before coding\n"
+            "  2. Settle the open claim when Claude finishes a turn\n"
+            "  3. Generate PR_EVIDENCE.md from git diff\n\n"
+            "All behavior is local. No network. No cloud."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    hooks_install.add_argument(
+        "--dry-run", dest="hooks_dry_run", action="store_true",
+        help="Show what would be installed without writing files.",
+    )
+    hooks_install.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing hook scripts and settings entries.",
+    )
+    hooks_install.add_argument("--json", action="store_true", help="Emit result as JSON.")
+    hooks_install.set_defaults(command="hooks", hooks_command="install")
+
+    hooks_uninstall = hooks_sub.add_parser(
+        "uninstall", help="Remove Chimera hook scripts from .claude/."
+    )
+    hooks_uninstall.add_argument("--json", action="store_true")
+    hooks_uninstall.set_defaults(command="hooks", hooks_command="uninstall")
+
+    hooks_status = hooks_sub.add_parser(
+        "status", help="Show current Chimera hook installation status."
+    )
+    hooks_status.add_argument("--json", action="store_true")
+    hooks_status.set_defaults(command="hooks", hooks_command="status")
+
     return parser
 
 
@@ -1301,6 +1347,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if parsed.command == "mcp":
         return _mcp(parsed)
+
+    if parsed.command == "hooks":
+        return _hooks(parsed)
 
     if parsed.command in ("record", "settle"):
         print(
@@ -3570,6 +3619,68 @@ def _xray(parsed: argparse.Namespace) -> int:
     else:
         print(markdown)
     return 0
+
+
+def _hooks(parsed: argparse.Namespace) -> int:
+    """Handle hooks install/uninstall/status."""
+    import sys as _sys
+
+    from chimera_memory.hooks import install_hooks, show_hooks_status, uninstall_hooks
+
+    sub = getattr(parsed, "hooks_command", None)
+    root = Path.cwd()
+
+    if sub == "install":
+        result = install_hooks(
+            root,
+            dry_run=getattr(parsed, "hooks_dry_run", False),
+            force=getattr(parsed, "force", False),
+        )
+        if parsed.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if result["dry_run"]:
+            print("Dry-run — no files written.")
+        for f in result["installed_files"]:
+            print(f"  Created: {f}")
+        for e in result["patched_settings_events"]:
+            print(f"  Patched: {result['settings_path']} ({e})")
+        for w in result["warnings"]:
+            print(f"  warning: {w}")
+        if result["installed_files"] or result["patched_settings_events"]:
+            print("\nChimera hooks installed. Open Claude Code in this project.")
+            print("Next: set CHIMERA_INTENT and run: chimera-memory claim lock --auto --json")
+        else:
+            print("Nothing to install (use --force to overwrite).")
+        return 0
+
+    if sub == "uninstall":
+        result = uninstall_hooks(root)
+        if parsed.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        for f in result["removed_files"]:
+            print(f"  Removed: {f}")
+        print("Chimera hooks uninstalled.")
+        return 0
+
+    if sub == "status":
+        result = show_hooks_status(root)
+        if parsed.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        status = "installed" if result["installed"] else "not fully installed"
+        print(f"Chimera hooks: {status}")
+        for name, present in result["scripts"].items():
+            icon = "✓" if present else "✗"
+            print(f"  {icon} .claude/hooks/{name}")
+        for event, registered in result["settings_hooks"].items():
+            icon = "✓" if registered else "✗"
+            print(f"  {icon} .claude/settings.json ({event})")
+        return 0
+
+    print("Usage: chimera-memory hooks {install,uninstall,status}", file=_sys.stderr)
+    return 2
 
 
 def _mcp(parsed: argparse.Namespace) -> int:

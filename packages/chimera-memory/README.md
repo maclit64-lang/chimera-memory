@@ -42,6 +42,27 @@ Compare two runs:
 chimera-memory bundle diff ./old-run/receipt ./new-run/receipt
 ```
 
+## Claude Code hooks (automatic evidence)
+
+Install Chimera hooks for automatic claim-locked evidence in Claude Code sessions:
+
+```bash
+chimera-memory hooks install
+```
+
+Then before starting a task in Claude Code:
+
+```bash
+export CHIMERA_INTENT="fix checkout null dereference"
+export CHIMERA_SCOPE_PATH="packages/cart"
+export CHIMERA_FALSIFIERS_JSON='[["uv","run","pytest","packages/cart/tests/"]]'
+chimera-memory claim lock --auto --json
+```
+
+When Claude finishes a turn, the Stop hook automatically settles the claim
+and generates `PR_EVIDENCE.md`. See
+[docs/examples/claude-hooks-setup.md](../../docs/examples/claude-hooks-setup.md).
+
 ## Local MCP tools for coding agents
 
 `chimera-memory mcp serve` starts a local stdio MCP server. MCP-capable agents
