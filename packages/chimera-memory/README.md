@@ -12,6 +12,36 @@ pip install chimera-memory
 
 Requires Python 3.12+. Installs `chimera-memory-types`, `pydantic`, and `filelock` automatically.
 
+## Try it in 60 seconds
+
+```bash
+chimera-memory demo
+```
+
+This runs a safe local demo in a temp directory — no project mutation, no network. It shows the full flow: init → wrap → verify → receipt bundle → inspect.
+
+## Project check suites
+
+Define your verification commands once, run them repeatedly:
+
+```bash
+chimera-memory init
+chimera-memory checks init --preset python
+chimera-memory checks run --bundle --output-dir ./run-output
+```
+
+This creates `report.md`, `report.json`, and a `receipt/` bundle. Inspect the result:
+
+```bash
+chimera-memory bundle inspect ./run-output/receipt
+```
+
+Compare two runs:
+
+```bash
+chimera-memory bundle diff ./old-run/receipt ./new-run/receipt
+```
+
 ## Quickstart (5 commands)
 
 ```bash
