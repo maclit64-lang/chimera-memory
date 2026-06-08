@@ -210,10 +210,10 @@ def test_stop_script_uses_commit_range_mode(project: Path) -> None:
     assert "--base" in script
 
 
-def test_prompt_submit_script_has_reminder(project: Path) -> None:
+def test_prompt_submit_script_calls_prompt_submit_helper(project: Path) -> None:
     install_hooks(project)
     script = (project / ".claude" / "hooks" / "chimera-prompt-submit.sh").read_text()
-    assert "CHIMERA_INTENT" in script
+    assert "chimera-memory hooks prompt-submit" in script
 
 
 def test_settings_json_references_correct_script_paths(project: Path) -> None:
