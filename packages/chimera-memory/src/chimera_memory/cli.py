@@ -1263,6 +1263,32 @@ def _build_parser() -> argparse.ArgumentParser:
     hooks_status.add_argument("--json", action="store_true")
     hooks_status.set_defaults(command="hooks", hooks_command="status")
 
+    hooks_prompt_submit = hooks_sub.add_parser(
+        "prompt-submit",
+        help="Handle a UserPromptSubmit event: derive intent and attempt auto-lock.",
+        description=(
+            "Reads a Claude UserPromptSubmit hook payload from stdin.\n"
+            "Derives intent from the prompt text, then attempts to auto-lock\n"
+            "a claim if falsifier inputs are configured.\n\n"
+            "Outputs Claude context injection text to stdout.\n"
+            "Diagnostic messages go to stderr only.\n\n"
+            "Never blocks (always exits 0).\n\n"
+            "Called automatically by the UserPromptSubmit hook script.\n"
+            "Can also be tested manually:\n"
+            "  echo '{\"prompt\": \"fix xray bug\"}' | chimera-memory hooks prompt-submit"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    hooks_prompt_submit.add_argument(
+        "--dry-run", dest="prompt_dry_run", action="store_true",
+        help="Validate and show generated spec without locking.",
+    )
+    hooks_prompt_submit.add_argument(
+        "--json", action="store_true",
+        help="Emit result as JSON (for debugging; not for hook stdout).",
+    )
+    hooks_prompt_submit.set_defaults(command="hooks", hooks_command="prompt-submit")
+
     return parser
 
 
@@ -3678,6 +3704,28 @@ def _hooks(parsed: argparse.Namespace) -> int:
             icon = "✓" if registered else "✗"
             print(f"  {icon} .claude/settings.json ({event})")
         return 0
+
+    if sub == "prompt-submit":
+        import sys as _sys
+
+        from chimera_memory.hooks import (
+            attempt_prompt_auto_lock,
+            extract_prompt_from_hook_input,
+            format_prompt_submit_output,
+        )
+
+        raw_stdin = _sys.stdin.read()
+        prompt_text = extract_prompt_from_hook_input(raw_stdin)
+        dry_run = getattr(parsed, "prompt_dry_run", False)
+        result_auto = attempt_prompt_auto_lock(prompt_text, root=root, dry_run=dry_run)
+
+        if parsed.json:
+            print(json.dumps(result_auto, indent=2, sort_keys=True))
+        else:
+            output = format_prompt_submit_output(result_auto)
+            if output.strip():
+                print(output)
+        return 0  # never block Claude
 
     print("Usage: chimera-memory hooks {install,uninstall,status}", file=_sys.stderr)
     return 2
