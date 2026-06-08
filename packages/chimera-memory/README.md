@@ -42,6 +42,28 @@ Compare two runs:
 chimera-memory bundle diff ./old-run/receipt ./new-run/receipt
 ```
 
+## Local MCP tools for coding agents
+
+`chimera-memory mcp serve` starts a local stdio MCP server. MCP-capable agents
+(Claude, Codex, Cursor, etc.) can call Chimera's claim and X-Ray tools directly:
+
+```json
+{
+  "mcpServers": {
+    "chimera-memory": {
+      "command": "chimera-memory",
+      "args": ["mcp", "serve", "--allow-write"]
+    }
+  }
+}
+```
+
+Tools: `chimera_claim_validate`, `chimera_claim_lock_auto`, `chimera_claim_show`,
+`chimera_claim_list`, `chimera_claim_settle` (requires `--allow-execute`),
+`chimera_xray_generate`.
+
+See [docs/examples/mcp-local-tools.md](../../docs/examples/mcp-local-tools.md).
+
 ## AI PR Evidence / Merge X-Ray
 
 ### Agent-seam auto-lock (v0.23)

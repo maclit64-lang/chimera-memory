@@ -1184,6 +1184,39 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     xray_generate.set_defaults(command="xray", xray_command="generate")
 
+    # ── mcp serve ──────────────────────────────────────────────────
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Local MCP tool server for coding agents.",
+    )
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
+    mcp_serve = mcp_sub.add_parser(
+        "serve",
+        help="Start a local stdio MCP server exposing Chimera tools.",
+        description=(
+            "Starts a local stdio MCP server (JSON-RPC 2.0 over stdin/stdout).\n\n"
+            "Read-only tools are enabled by default (validate, show, list).\n"
+            "Local-write tools require --allow-write (lock, xray generate).\n"
+            "Execute tools require --allow-execute (claim settle).\n\n"
+            "No network. No cloud. All data stays local.\n\n"
+            "Configure in your MCP client:\n"
+            '  {"command": "chimera-memory", "args": ["mcp", "serve", "--allow-write"]}'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mcp_serve.add_argument(
+        "--allow-write", dest="mcp_allow_write", action="store_true",
+        help="Enable local-write tools: claim lock --auto, xray generate.",
+    )
+    mcp_serve.add_argument(
+        "--allow-execute", dest="mcp_allow_execute", action="store_true",
+        help=(
+            "Enable execute tools: claim settle. "
+            "WARNING: this allows running local project commands from sealed claims."
+        ),
+    )
+    mcp_serve.set_defaults(command="mcp", mcp_command="serve")
+
     return parser
 
 
@@ -1265,6 +1298,9 @@ def main(argv: list[str] | None = None) -> int:
         return _claim(parsed)
     if parsed.command == "xray":
         return _xray(parsed)
+
+    if parsed.command == "mcp":
+        return _mcp(parsed)
 
     if parsed.command in ("record", "settle"):
         print(
@@ -3533,6 +3569,26 @@ def _xray(parsed: argparse.Namespace) -> int:
         print(f"\n{result['verdict']}")
     else:
         print(markdown)
+    return 0
+
+
+def _mcp(parsed: argparse.Namespace) -> int:
+    """Handle mcp serve."""
+    import sys as _sys
+
+    sub = getattr(parsed, "mcp_command", None)
+    if sub != "serve":
+        print("Usage: chimera-memory mcp serve [--allow-write] [--allow-execute]",
+              file=_sys.stderr)
+        return 2
+
+    from chimera_memory.mcp_server import ToolPermissions, serve_mcp
+
+    perms = ToolPermissions(
+        allow_write=getattr(parsed, "mcp_allow_write", False),
+        allow_execute=getattr(parsed, "mcp_allow_execute", False),
+    )
+    serve_mcp(perms, root=Path.cwd())
     return 0
 
 
