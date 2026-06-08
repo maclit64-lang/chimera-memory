@@ -94,6 +94,10 @@ class MemoryStore:
         return self.memory_dir / "sessions.jsonl"
 
     @property
+    def claim_locks_path(self) -> Path:
+        return self.memory_dir / "claim_locks.jsonl"
+
+    @property
     def index_path(self) -> Path:
         return self.memory_dir / "index.sqlite"
 
@@ -208,6 +212,41 @@ class MemoryStore:
     def read_session_events(self) -> list[dict[str, Any]]:
         """Return all session events in insertion order."""
         return self.read_jsonl("sessions.jsonl")
+
+    def append_claim_lock(self, payload: dict[str, Any]) -> None:
+        """Append one claim-lock record to claim_locks.jsonl (append-only).
+
+        Both the initial LOCKED record and later settlement records are appended
+        as full records sharing the same ``claim_id``; the latest record for an
+        id is authoritative. History is never mutated.
+        """
+        self.ensure()
+        self.append_jsonl("claim_locks.jsonl", payload)
+
+    def read_claim_locks(self) -> list[dict[str, Any]]:
+        """Return all claim-lock records in insertion order."""
+        return self.read_jsonl("claim_locks.jsonl")
+
+    def latest_claim_lock(self, claim_id: str) -> dict[str, Any] | None:
+        """Return the most recent claim-lock record for ``claim_id``, or None."""
+        match: dict[str, Any] | None = None
+        for record in self.read_claim_locks():
+            if record.get("claim_id") == claim_id:
+                match = record
+        return match
+
+    def latest_claim_locks(self) -> list[dict[str, Any]]:
+        """Return the latest record per claim_id, in first-seen order."""
+        order: list[str] = []
+        latest: dict[str, dict[str, Any]] = {}
+        for record in self.read_claim_locks():
+            cid = record.get("claim_id")
+            if not isinstance(cid, str):
+                continue
+            if cid not in latest:
+                order.append(cid)
+            latest[cid] = record
+        return [latest[cid] for cid in order]
 
     def current_session(self) -> dict[str, Any] | None:
         """Return the open session's payload (or None if all closed).
