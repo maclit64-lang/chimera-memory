@@ -1080,6 +1080,34 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     claim_lock.add_argument("--memory-dir")
     claim_lock.add_argument("--json", action="store_true", help="Emit the record as JSON")
+    claim_lock.add_argument(
+        "--auto", dest="claim_auto", action="store_true",
+        help="Build claim spec from env vars / flags instead of a claim.toml file. "
+        "Sources: CHIMERA_INTENT, CHIMERA_SCOPE_PATH, CHIMERA_FALSIFIERS_JSON, "
+        "CHIMERA_MUST_NOT_BREAK_JSON, CHIMERA_PREDICTED_OUTCOME.",
+    )
+    claim_lock.add_argument(
+        "--dry-run", dest="claim_dry_run", action="store_true",
+        help="With --auto: validate and print the generated spec without locking.",
+    )
+    claim_lock.add_argument(
+        "--save-spec", dest="claim_save_spec", metavar="PATH",
+        help="With --auto: also write the generated TOML spec to this file.",
+    )
+    claim_lock.add_argument(
+        "--falsifiers-json", dest="claim_falsifiers_json", metavar="JSON",
+        help="With --auto: JSON array of command arrays for falsifiers, "
+        "e.g. '[[\"uv\",\"run\",\"pytest\",\"tests/\"]]'.",
+    )
+    claim_lock.add_argument(
+        "--must-not-break-json", dest="claim_mnb_json", metavar="JSON",
+        help="With --auto: JSON array of command arrays for must-not-break checks.",
+    )
+    claim_lock.add_argument(
+        "--from-checks", dest="claim_from_checks", action="store_true",
+        help="With --auto: use chimera-memory.checks.toml as falsifier source "
+        "when CHIMERA_FALSIFIERS_JSON is not set.",
+    )
     claim_lock.set_defaults(command="claim", claim_command="lock")
 
     claim_list = claim_sub.add_parser("list", help="List locked/settled claims.")
@@ -3184,6 +3212,21 @@ command = ["python", "--version"]
 """
 
 
+def _write_generated_toml(spec: Any, path: Path) -> None:
+    """Write a generated claim spec to a TOML file for review."""
+    lines = [
+        f'intent = {spec.intent!r}',
+        f'scope_path = {spec.scope_path!r}',
+        f'predicted_outcome = {spec.predicted_outcome!r}',
+    ]
+    for cmd in spec.falsifiers:
+        lines += ["", "[[falsifiers]]", f"command = {cmd!r}"]
+    for cmd in spec.must_not_break:
+        lines += ["", "[[must_not_break]]", f"command = {cmd!r}"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Saved generated spec to {path}")
+
+
 def _claim(parsed: argparse.Namespace) -> int:
     """Handle claim lock/list/show/settle/report subcommands."""
     import sys
@@ -3243,6 +3286,81 @@ def _claim(parsed: argparse.Namespace) -> int:
 
     if sub == "lock":
         try:
+            if getattr(parsed, "claim_auto", False):
+                from chimera_memory.claim_lock import build_claim_spec_from_auto_inputs
+                spec, extra_meta = build_claim_spec_from_auto_inputs(
+                    intent=getattr(parsed, "claim_intent", None),
+                    scope_path=getattr(parsed, "claim_scope_path", None),
+                    falsifiers_json=getattr(parsed, "claim_falsifiers_json", None),
+                    must_not_break_json=getattr(parsed, "claim_mnb_json", None),
+                    predicted_outcome=getattr(parsed, "claim_predicted", None),
+                    store=store,
+                    root=root,
+                    from_checks=getattr(parsed, "claim_from_checks", False),
+                )
+                # Run validation; hard errors refuse; warnings accumulate.
+                from chimera_memory.claim_lock import validate_claim_spec
+                validation = validate_claim_spec(spec, root=root)
+                if not validation["valid"]:
+                    for e in validation["errors"]:
+                        print(f"error: {e}", file=sys.stderr)
+                    return 1
+                extra_warnings = extra_meta.get("extra_warnings", [])
+                all_warnings = validation["warnings"] + extra_warnings
+
+                if getattr(parsed, "claim_dry_run", False):
+                    # Dry-run: validate + show, no lock.
+                    out: dict[str, Any] = {
+                        "claim_id": None,
+                        "status": "DRY_RUN",
+                        "auto_lock": True,
+                        "dry_run": True,
+                        "generated_spec": extra_meta["generated_spec"],
+                        "validation": {
+                            "valid": validation["valid"],
+                            "errors": validation["errors"],
+                            "warnings": all_warnings,
+                        },
+                    }
+                    if parsed.json:
+                        print(json.dumps(out, indent=2, sort_keys=True))
+                    else:
+                        print("Dry-run — claim NOT locked.")
+                        print(f"  intent:    {spec.intent}")
+                        print(f"  scope:     {spec.scope_path}")
+                        for w in all_warnings:
+                            print(f"  warning:   {w}")
+                    return 0
+
+                # Save generated spec if requested.
+                save_spec_path = getattr(parsed, "claim_save_spec", None)
+                if save_spec_path:
+                    _write_generated_toml(spec, Path(save_spec_path))
+
+                record = lock_claim(store, spec, root=root)
+                if parsed.json:
+                    out_json: dict[str, Any] = {
+                        "claim_id": record["claim_id"],
+                        "status": record["settlement"]["status"],
+                        "auto_lock": True,
+                        "generated_spec": extra_meta["generated_spec"],
+                        "validation": {
+                            "errors": [],
+                            "warnings": record["quality"]["warnings"],
+                        },
+                        "attribution": record["attribution"],
+                    }
+                    print(json.dumps(out_json, indent=2, sort_keys=True))
+                else:
+                    print(f"Locked claim {record['claim_id']}")
+                    print(f"  intent:  {record['intent']}")
+                    print(f"  scope:   {record['scope_path']}")
+                    print(f"  quality: {record['quality']['claim_quality']}")
+                    for w in record["quality"]["warnings"]:
+                        print(f"  warning: {w}")
+                    print(f"\nNext: chimera-memory claim settle {record['claim_id']}")
+                return 0
+
             spec = _build_claim_spec(parsed, safe_command_from_string, ClaimSpec,
                                      load_spec_from_toml)
             record = lock_claim(store, spec, root=root)

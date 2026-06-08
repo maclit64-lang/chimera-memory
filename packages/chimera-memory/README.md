@@ -44,6 +44,22 @@ chimera-memory bundle diff ./old-run/receipt ./new-run/receipt
 
 ## AI PR Evidence / Merge X-Ray
 
+### Agent-seam auto-lock (v0.23)
+
+Agents and hooks can create sealed claims without writing a `claim.toml` file:
+
+```bash
+CHIMERA_INTENT="fix checkout null dereference" \
+CHIMERA_SCOPE_PATH="packages/cart" \
+CHIMERA_FALSIFIERS_JSON='[["uv","run","pytest","tests/test_checkout.py::test_empty_cart"]]' \
+CHIMERA_MUST_NOT_BREAK_JSON='[["uv","run","pytest","tests/test_cart.py"]]' \
+chimera-memory claim lock --auto --json
+```
+
+This is the stable primitive that future MCP/hooks integrations will call.
+Preview without locking: `chimera-memory claim lock --auto --dry-run --json`.
+See [docs/examples/agent-seam-auto-lock.md](../../docs/examples/agent-seam-auto-lock.md).
+
 Chimera can now produce local PR evidence reports for AI-assisted coding work.
 
 A claim can be locked before edits with an intent, scope, falsifier, and

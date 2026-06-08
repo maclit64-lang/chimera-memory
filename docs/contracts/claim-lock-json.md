@@ -98,9 +98,20 @@ or `"unknown"`; attribution is never fabricated.
 
 Status precedence: `CONTRADICTED` > `UNSETTLED` > `SCOPE_DRIFT` > `VALIDATED`.
 
-## Dry-run validation
+## Auto-lock (v0.23)
 
-Before sealing, use `claim validate --from-file claim.toml` to check the spec
+`claim lock --auto` builds a claim spec from env vars / flags without a
+`claim.toml` file. The JSON response includes additional fields:
+
+| Field | Description |
+|---|---|
+| `auto_lock` | `true` when claim was created via `--auto` |
+| `generated_spec` | The generated claim spec as an object |
+| `validation` | `{errors, warnings}` from pre-lock validation |
+
+For `--dry-run`, `claim_id` is `null` and `status` is `"DRY_RUN"`.
+
+## Dry-run validation
 without writing anything. The result schema is::
 
     {"valid": bool, "errors": list[str], "warnings": list[str]}
