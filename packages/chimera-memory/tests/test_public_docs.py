@@ -237,3 +237,39 @@ def test_readme_python_version_accurate():
 def test_readme_no_broken_relative_docs_link():
     text = _README.read_text()
     assert "../../docs/prompts/" not in text
+
+
+def test_readme_mentions_demo():
+    text = _README.read_text()
+    assert "chimera-memory demo" in text
+
+
+def test_readme_mentions_checks():
+    text = _README.read_text()
+    assert "chimera-memory checks" in text
+
+
+def test_readme_mentions_bundle_inspect():
+    text = _README.read_text()
+    assert "bundle inspect" in text
+
+
+def test_readme_mentions_bundle_diff():
+    text = _README.read_text()
+    assert "bundle diff" in text
+
+
+def test_readme_mentions_report():
+    text = _README.read_text()
+    assert "report.md" in text or "report.json" in text
+
+
+def test_launch_walkthrough_exists():
+    from pathlib import Path
+    doc = Path(__file__).resolve().parents[3] / "docs" / "examples" / "public-launch-walkthrough.md"
+    assert doc.exists()
+    text = doc.read_text()
+    assert "chimera-memory demo" in text
+    assert "chimera-memory checks" in text
+    assert "/Users/agbodaniel" not in text
+    assert "pypi-" not in text
