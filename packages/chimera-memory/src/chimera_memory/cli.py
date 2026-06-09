@@ -3675,7 +3675,11 @@ def _hooks(parsed: argparse.Namespace) -> int:
             print(f"  warning: {w}")
         if result["installed_files"] or result["patched_settings_events"]:
             print("\nChimera hooks installed. Open Claude Code in this project.")
-            print("Next: set CHIMERA_INTENT and run: chimera-memory claim lock --auto --json")
+            print("Next: create .chimera/hooks.toml with falsifiers, then start a coding prompt.")
+            print(
+                "Optional: CHIMERA_INTENT and CHIMERA_FALSIFIERS_JSON can override config"
+                " for advanced use."
+            )
         else:
             print("Nothing to install (use --force to overwrite).")
         return 0
