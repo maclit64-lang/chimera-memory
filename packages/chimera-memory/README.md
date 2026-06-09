@@ -4,6 +4,19 @@ Local-first reliability ledger for AI coding-agent work.
 
 Records what an agent tried, which command verified it, what happened, and what receipt proves it. Everything stays on your machine — no cloud, no sync, no account required.
 
+## Public alpha
+
+Chimera Memory is in public alpha for developers using AI coding agents.
+
+It is a local-first CLI that records what an AI coding agent claimed before editing, runs your real checks, settles the result, and generates `PR_EVIDENCE.md` for review.
+
+```bash
+pip install chimera-memory==0.26.4
+chimera-memory demo
+```
+
+Start here: [docs/public-alpha.md](../../docs/public-alpha.md)
+
 ## Install
 
 ```bash
