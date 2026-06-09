@@ -145,6 +145,20 @@ def generate_xray(
     settled_claims = [c for c in claims if _status_of(c) != STATUS_LOCKED]
     post_hoc = len(claims) == 0
 
+    # When no claim locks exist, check wrap-based outcomes (claims.jsonl/outcomes.jsonl).
+    # wrap evidence is real and settled but lives in a separate storage path that
+    # X-Ray cannot map to changed files without file-level scope.
+    wrap_outcomes_count = 0
+    if post_hoc:
+        try:
+            outcomes = store.read_outcomes()
+            wrap_outcomes_count = sum(
+                1 for o in outcomes
+                if o.get("outcome", {}).get("observed") is True
+            )
+        except Exception:  # noqa: BLE001
+            wrap_outcomes_count = 0
+
     settled_view: list[dict[str, Any]] = []
     for claim in claims:
         status = _status_of(claim)
@@ -238,6 +252,7 @@ def generate_xray(
         "weakly_covered_files": sorted(weakly_covered),
         "scope_drift_files": scope_drift,
         "reviewer_focus": reviewer_focus,
+        "wrap_outcomes_count": wrap_outcomes_count,
         "counts": {
             "changed_files": len(changed_files),
             "claims": len(claims),
@@ -385,6 +400,29 @@ def render_markdown(xray: dict[str, Any]) -> str:
     else:
         for claim in settled:
             lines += _render_claim_block(claim)
+
+    # Wrap-based evidence note (post_hoc only)
+    wrap_count = xray.get("wrap_outcomes_count", 0)
+    if wrap_count > 0 and xray.get("mode") == "post_hoc":
+        lines += [
+            "## Wrap-Based Evidence (Not Linked to Diff)",
+            "",
+            f"{wrap_count} settled outcome(s) found in the wrap ledger (`chimera-memory wrap`).",
+            "",
+            "These outcomes are real settled evidence, but `chimera-memory xray` cannot map",
+            "them to changed files because `wrap`-based claims carry no file-level scope.",
+            "",
+            "To get PR_EVIDENCE with linked claim coverage, use `claim lock` + `claim settle`",
+            "instead of (or alongside) `chimera-memory wrap`:",
+            "",
+            "```bash",
+            "chimera-memory claim lock --auto --json   # before editing",
+            "# ... make your changes ...",
+            "chimera-memory claim settle <claim_id>    # after changes",
+            "chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md",
+            "```",
+            "",
+        ]
 
     # Evidence-dark — split by classification
     lines += ["## Evidence-Dark Changes", ""]
