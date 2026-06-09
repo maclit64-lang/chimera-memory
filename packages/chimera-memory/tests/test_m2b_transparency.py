@@ -11,6 +11,7 @@ from chimera_memory.cli import main
 
 @pytest.fixture(autouse=True)
 def isolated_cwd(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()  # init now requires a git repo
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

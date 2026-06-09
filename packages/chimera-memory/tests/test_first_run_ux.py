@@ -126,6 +126,7 @@ def test_quickstart_doc_mentions_no_m2b_routing_cloud() -> None:
 
 
 def test_init_creates_gitignore_if_missing(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     main(["init"])
     gi = tmp_path / ".gitignore"
@@ -134,6 +135,7 @@ def test_init_creates_gitignore_if_missing(tmp_path, monkeypatch) -> None:
 
 
 def test_init_appends_to_existing_gitignore(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".gitignore").write_text("*.pyc\n")
     main(["init"])
@@ -143,6 +145,7 @@ def test_init_appends_to_existing_gitignore(tmp_path, monkeypatch) -> None:
 
 
 def test_init_gitignore_idempotent(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     main(["init"])
     main(["init"])
@@ -160,3 +163,109 @@ def test_readme_has_windows_stance_and_troubleshooting() -> None:
         "README must state what is not built"
     assert "pip install chimera-memory" in readme.read_text(encoding="utf-8"), \
         "README must include pip install command"
+
+
+# ---------------------------------------------------------------------------
+# v0.26.3: F11 — init requires .git
+# ---------------------------------------------------------------------------
+
+def test_init_outside_git_returns_nonzero(tmp_path, monkeypatch) -> None:
+    """init must return non-zero when .git is absent."""
+    monkeypatch.chdir(tmp_path)
+    result = main(["init"])
+    assert result != 0
+
+
+def test_init_outside_git_mentions_git_repository(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    main(["init"])
+    out = capsys.readouterr().out
+    assert "git repository" in out.lower() or "git" in out.lower()
+
+
+def test_init_outside_git_mentions_git_init(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    main(["init"])
+    out = capsys.readouterr().out
+    assert "git init" in out
+
+
+def test_init_inside_git_succeeds(tmp_path, monkeypatch) -> None:
+    """init must succeed when .git exists."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    result = main(["init"])
+    assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# v0.26.3: F12 — hooks init creates starter hooks.toml
+# ---------------------------------------------------------------------------
+
+def test_hooks_init_creates_hooks_toml(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    result = main(["hooks", "init"])
+    assert result == 0
+    assert (tmp_path / ".chimera" / "hooks.toml").exists()
+
+
+def test_hooks_init_refuses_to_overwrite(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".chimera").mkdir()
+    (tmp_path / ".chimera" / "hooks.toml").write_text("existing", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = main(["hooks", "init"])
+    assert result != 0
+    assert (tmp_path / ".chimera" / "hooks.toml").read_text() == "existing"
+
+
+def test_hooks_init_force_overwrites(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".chimera").mkdir()
+    (tmp_path / ".chimera" / "hooks.toml").write_text("old", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = main(["hooks", "init", "--force"])
+    assert result == 0
+    content = (tmp_path / ".chimera" / "hooks.toml").read_text()
+    assert content != "old"
+
+
+def test_hooks_init_template_contains_scope_path(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    main(["hooks", "init"])
+    content = (tmp_path / ".chimera" / "hooks.toml").read_text()
+    assert 'scope_path = "."' in content
+
+
+def test_hooks_init_template_contains_falsifiers(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    main(["hooks", "init"])
+    content = (tmp_path / ".chimera" / "hooks.toml").read_text()
+    assert "falsifiers" in content
+
+
+def test_hooks_init_template_contains_must_not_break(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    main(["hooks", "init"])
+    content = (tmp_path / ".chimera" / "hooks.toml").read_text()
+    assert "must_not_break" in content
+
+
+def test_hooks_init_template_mentions_venv_or_uv(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    main(["hooks", "init"])
+    content = (tmp_path / ".chimera" / "hooks.toml").read_text()
+    assert "uv" in content or ".venv" in content
+
+
+def test_hooks_init_template_mentions_node_typescript(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    main(["hooks", "init"])
+    content = (tmp_path / ".chimera" / "hooks.toml").read_text()
+    assert "npm" in content or "pnpm" in content or "Node" in content

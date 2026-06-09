@@ -29,6 +29,7 @@ def _write_pytest_file(root: Path, body: str) -> None:
 
 
 def test_init_creates_local_memory_files(monkeypatch, tmp_path, capsys) -> None:
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
 
     assert main(["init"]) == 0

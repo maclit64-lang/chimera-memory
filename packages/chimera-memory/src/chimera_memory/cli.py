@@ -1263,6 +1263,16 @@ def _build_parser() -> argparse.ArgumentParser:
     hooks_status.add_argument("--json", action="store_true")
     hooks_status.set_defaults(command="hooks", hooks_command="status")
 
+    hooks_init = hooks_sub.add_parser(
+        "init",
+        help="Create a starter .chimera/hooks.toml if one does not exist.",
+    )
+    hooks_init.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing .chimera/hooks.toml.",
+    )
+    hooks_init.set_defaults(command="hooks", hooks_command="init")
+
     hooks_prompt_submit = hooks_sub.add_parser(
         "prompt-submit",
         help="Handle a UserPromptSubmit event: derive intent and attempt auto-lock.",
@@ -1303,6 +1313,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if parsed.command == "init":
+        if not (Path.cwd() / ".git").exists():
+            print("Chimera Memory expects a git repository.")
+            print("Run `git init` first, or run this command from an existing repo.")
+            return 1
         store = MemoryStore.from_paths()
         store.initialize()
         print(store.memory_dir)
@@ -3707,6 +3721,45 @@ def _hooks(parsed: argparse.Namespace) -> int:
         for event, registered in result["settings_hooks"].items():
             icon = "✓" if registered else "✗"
             print(f"  {icon} .claude/settings.json ({event})")
+        return 0
+
+    if sub == "init":
+        chimera_dir = root / ".chimera"
+        hooks_toml = chimera_dir / "hooks.toml"
+        if hooks_toml.exists() and not getattr(parsed, "force", False):
+            print(f"{hooks_toml} already exists. Use --force to overwrite.")
+            return 1
+        chimera_dir.mkdir(exist_ok=True)
+        _HOOKS_TOML_TEMPLATE = """\
+[claude_hooks]
+auto_lock = true
+scope_path = "."
+
+# Put the narrowest command that proves the task worked here.
+# Python examples:
+# falsifiers = [["uv", "run", "pytest", "tests/test_specific_area.py", "-q"]]
+# falsifiers = [[".venv/bin/python", "-m", "pytest", "tests/test_specific_area.py", "-q"]]
+#
+# Node/TypeScript example:
+# falsifiers = [["pnpm", "run", "build"]]
+# falsifiers = [["npm", "test"]]
+
+falsifiers = [
+  ["python3", "-m", "pytest", "tests/test_specific_area.py", "-q"]
+]
+
+# Put broader checks that must keep passing here.
+# Examples:
+# must_not_break = [["uv", "run", "pytest", "-q"]]
+# must_not_break = [["pnpm", "run", "build"], ["pnpm", "test"]]
+
+must_not_break = [
+  ["python3", "-m", "pytest", "-q"]
+]
+"""
+        hooks_toml.write_text(_HOOKS_TOML_TEMPLATE, encoding="utf-8")
+        print(f"Created {hooks_toml}")
+        print("Edit the falsifiers and must_not_break commands for your project before use.")
         return 0
 
     if sub == "prompt-submit":
