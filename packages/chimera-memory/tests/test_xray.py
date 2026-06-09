@@ -271,3 +271,68 @@ def test_xray_post_hoc_suggests_pr_pattern_in_working_tree(repo: Path) -> None:
     result = generate_xray(store, root=repo)
     assert "--base main --head HEAD" in result["verdict"] or \
            "--base main --head HEAD" in result["working_tree_warning"]
+
+
+# ── v0.26.4: wrap-based evidence gap regression tests ────────────────────────
+
+def test_xray_post_hoc_detects_wrap_outcomes_in_verdict(repo: Path) -> None:
+    """When wrap outcomes exist but no claim locks, verdict must mention them."""
+    from datetime import UTC, datetime
+    from chimera_memory.ledger import record_claim, settle_claim as ledger_settle
+    from chimera_memory_types.finding import EvidenceRefType
+
+    store = MemoryStore.from_paths(root=repo)
+    store.initialize()
+    # Simulate wrap: record + settle via ledger (claims.jsonl / outcomes.jsonl)
+    cid = record_claim(
+        title="pnpm run build will pass",
+        summary="Wrapped command expected to exit 0: pnpm run build",
+        predicted=True,
+        evidence=[{"ref_type": EvidenceRefType.EXTERNAL, "ref_id": "cmd:wrap", "available_at": datetime.now(UTC)}],
+        memory_dir=store.memory_dir,
+    )
+    ledger_settle(cid, True, datetime.now(UTC), memory_dir=store.memory_dir)
+
+    # Modify a file (simulating the task)
+    (repo / "packages" / "cart" / "checkout.py").write_text("x = 99\n")
+
+    result = generate_xray(store, root=repo)
+    # No claim locks → post_hoc mode
+    assert result["mode"] == "post_hoc"
+    # But wrap outcomes should be surfaced in the verdict or a dedicated field
+    md = render_markdown(result)
+    assert "wrap" in md.lower() or "chimera-memory wrap" in md or "legacy" in md.lower() or \
+           result.get("wrap_outcomes_count", 0) > 0, (
+        "PR_EVIDENCE must mention wrap-based outcomes when they exist in post_hoc mode"
+    )
+
+
+def test_xray_post_hoc_wrap_outcomes_count_in_result(repo: Path) -> None:
+    """generate_xray must expose wrap_outcomes_count when wrap outcomes exist."""
+    from datetime import UTC, datetime
+    from chimera_memory.ledger import record_claim, settle_claim as ledger_settle
+    from chimera_memory_types.finding import EvidenceRefType
+
+    store = MemoryStore.from_paths(root=repo)
+    store.initialize()
+    cid = record_claim(
+        title="pnpm run build will pass",
+        summary="s",
+        predicted=True,
+        evidence=[{"ref_type": EvidenceRefType.EXTERNAL, "ref_id": "cmd:wrap", "available_at": datetime.now(UTC)}],
+        memory_dir=store.memory_dir,
+    )
+    ledger_settle(cid, True, datetime.now(UTC), memory_dir=store.memory_dir)
+
+    result = generate_xray(store, root=repo)
+    assert result.get("wrap_outcomes_count", 0) >= 1
+
+
+def test_xray_post_hoc_no_wrap_outcomes_unchanged(repo: Path) -> None:
+    """When no wrap outcomes exist, post_hoc behavior is unchanged."""
+    store = MemoryStore.from_paths(root=repo)
+    store.initialize()
+    (repo / "packages" / "cart" / "checkout.py").write_text("x = 2\n")
+    result = generate_xray(store, root=repo)
+    assert result["mode"] == "post_hoc"
+    assert result.get("wrap_outcomes_count", 0) == 0
