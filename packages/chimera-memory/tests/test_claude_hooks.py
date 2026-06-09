@@ -222,3 +222,20 @@ def test_settings_json_references_correct_script_paths(project: Path) -> None:
     stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
     assert "chimera-stop.sh" in stop_cmd
     assert "CLAUDE_PROJECT_DIR" in stop_cmd  # uses project-relative path
+
+
+# ── v0.26.2 onboarding hardening tests ───────────────────────────────────────
+
+def test_install_output_mentions_hooks_toml(project: Path, capsys) -> None:
+    """Hook install next-step message must reference .chimera/hooks.toml."""
+    main(["hooks", "install"])
+    out = capsys.readouterr().out
+    assert "hooks.toml" in out
+
+
+def test_install_output_no_longer_says_set_chimera_intent(project: Path, capsys) -> None:
+    """Hook install next-step must not present CHIMERA_INTENT as the primary next step."""
+    main(["hooks", "install"])
+    out = capsys.readouterr().out
+    # CHIMERA_INTENT may appear as an optional/advanced note but not as a "Next:" directive.
+    assert "Next: set CHIMERA_INTENT" not in out

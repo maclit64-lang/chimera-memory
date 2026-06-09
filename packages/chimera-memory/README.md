@@ -12,6 +12,18 @@ pip install chimera-memory
 
 Requires Python 3.12+. Installs `chimera-memory-types`, `pydantic`, and `filelock` automatically.
 
+> **macOS note:** System `python3` may be 3.9. Use `python3.12` or `uv` explicitly:
+>
+> ```bash
+> # With a system Python 3.12:
+> python3.12 -m venv .venv && source .venv/bin/activate
+> pip install chimera-memory
+>
+> # Or with uv:
+> uv venv --python 3.12 .venv && source .venv/bin/activate
+> pip install chimera-memory
+> ```
+
 ## Try it in 60 seconds
 
 ```bash
@@ -50,18 +62,35 @@ Install Chimera hooks for automatic claim-locked evidence in Claude Code session
 chimera-memory hooks install
 ```
 
-Then before starting a task in Claude Code:
+Then create `.chimera/hooks.toml` in your project root:
 
-```bash
-export CHIMERA_INTENT="fix checkout null dereference"
-export CHIMERA_SCOPE_PATH="packages/cart"
-export CHIMERA_FALSIFIERS_JSON='[["uv","run","pytest","packages/cart/tests/"]]'
-chimera-memory claim lock --auto --json
+```toml
+[claude_hooks]
+auto_lock = true
+scope_path = "."          # use "." to start; narrow only when confident
+
+falsifiers = [
+  ["python3", "-m", "pytest", "tests/test_my_area.py", "-q"]
+]
+
+must_not_break = [
+  ["python3", "-m", "pytest", "-q"]
+]
 ```
 
-When Claude finishes a turn, the Stop hook automatically settles the claim
-and generates `PR_EVIDENCE.md`. See
+When you submit a prompt in Claude Code, the UserPromptSubmit hook derives the
+intent and auto-locks a claim. When Claude finishes a turn, the Stop hook
+settles the claim and generates `PR_EVIDENCE.md`. See
 [docs/examples/claude-hooks-setup.md](../../docs/examples/claude-hooks-setup.md).
+
+**scope_path tip:** Start with `scope_path = "."` so that co-changed tests,
+docs, and config files are included in scope. Use a narrower path only when
+your task is strictly limited to one package or directory.
+
+**SCOPE_DRIFT:** If settlement reports `SCOPE_DRIFT`, it means your checks
+passed but some changed files were outside the declared `scope_path`. This is
+honest review signal, not a test failure. Common first-run cause: `.gitignore`
+or `.chimera/hooks.toml` changed alongside your code.
 
 ## Local MCP tools for coding agents
 
@@ -118,8 +147,16 @@ chimera-memory claim lock --from-file claim.toml
 chimera-memory claim settle <claim_id>
 
 # 3. Generate the PR evidence report
+#    If your changes are committed on a branch:
+chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
+
+#    If your changes are still uncommitted (working-tree mode):
 chimera-memory xray generate --output PR_EVIDENCE.md
 ```
+
+> **Committed vs uncommitted:** `--base`/`--head` uses `git diff` between two
+> refs and excludes untracked files — recommended for PR review. Without
+> `--base`, Chimera reads the current working tree including unstaged changes.
 
 Example `claim.toml`:
 

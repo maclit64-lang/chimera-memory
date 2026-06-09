@@ -273,3 +273,54 @@ def test_launch_walkthrough_exists():
     assert "chimera-memory checks" in text
     assert "/Users/agbodaniel" not in text
     assert "pypi-" not in text
+
+
+# ── v0.26.2 onboarding hardening guards ───────────────────────────────────────
+
+_ALPHA_TRIAL = Path(__file__).resolve().parents[3] / "docs" / "alpha-trial.md"
+
+
+def test_readme_mentions_python312():
+    text = _README.read_text()
+    assert "python3.12" in text or "Python 3.12" in text
+
+
+def test_readme_mentions_scope_drift_not_test_failure():
+    text = _README.read_text()
+    assert "SCOPE_DRIFT" in text
+
+
+def test_readme_mentions_committed_xray_mode():
+    text = _README.read_text()
+    assert "--base main --head HEAD" in text
+
+
+def test_readme_mentions_uncommitted_xray_mode():
+    text = _README.read_text()
+    # Working-tree mode: xray generate without --base
+    assert "xray generate --output" in text
+
+
+def test_alpha_trial_doc_exists():
+    assert _ALPHA_TRIAL.exists(), "docs/alpha-trial.md must exist"
+
+
+def test_alpha_trial_mentions_python312():
+    text = _ALPHA_TRIAL.read_text()
+    assert "python3.12" in text or "Python 3.12" in text
+
+
+def test_alpha_trial_mentions_scope_drift_not_failure():
+    text = _ALPHA_TRIAL.read_text()
+    assert "SCOPE_DRIFT does not mean" in text
+
+
+def test_alpha_trial_mentions_both_xray_modes():
+    text = _ALPHA_TRIAL.read_text()
+    assert "--base main --head HEAD" in text
+    assert "xray generate --output" in text
+
+
+def test_alpha_trial_recommends_dot_scope_path():
+    text = _ALPHA_TRIAL.read_text()
+    assert 'scope_path = "."' in text
