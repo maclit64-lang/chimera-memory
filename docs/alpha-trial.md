@@ -2,6 +2,9 @@
 
 This guide walks an external alpha tester through a first real trial of Chimera Memory on their own project.
 
+Source: https://github.com/maclit64-lang/chimera-memory
+This guide: https://github.com/maclit64-lang/chimera-memory/blob/main/docs/alpha-trial.md
+
 ---
 
 ## What this is
@@ -19,6 +22,7 @@ No cloud. No account. No sync.
 - **Python 3.12 or later** (macOS system `python3` is often 3.9 — use `python3.12` or `uv`)
 - Claude Code (for automatic hook-based evidence)
 - A real project with at least one runnable test or check command
+- **A git repository** — `chimera-memory init` requires `.git` to exist
 
 ---
 
@@ -49,16 +53,46 @@ Pick a project you are actively working on. Good choices:
 
 Avoid: toy projects with no tests, or repos where you cannot run any verification command.
 
+**The project must be a git repository.** If it is not, run `git init` first.
+
 ---
 
 ## Initialize
 
 ```bash
 cd your-project/
+git init          # skip if .git already exists
 chimera-memory init
 ```
 
 This creates `.chimera-memory/` (the local ledger) and adds it to `.gitignore`.
+
+If you run `chimera-memory init` outside a git repository, you will see:
+
+```
+Chimera Memory expects a git repository.
+Run `git init` first, or run this command from an existing repo.
+```
+
+---
+
+## Start a session (if using manual wrap flow)
+
+Sessions group claims and receipts for a coding run.
+
+If you use Claude Code hooks, the session is managed automatically.
+
+If you use `wrap` directly (manual flow), start a session first:
+
+```bash
+chimera-memory session start \
+  --branch "$(git branch --show-current)" \
+  --task "short task description" \
+  --agent "manual" \
+  --model "unknown"
+```
+
+Without a session, `wrap` will warn: "no active session." Start the session and retry.
 
 ---
 
@@ -77,7 +111,15 @@ The hooks fire automatically when you use Claude Code — no manual claim lockin
 
 ## Configure `.chimera/hooks.toml`
 
-Create this file in your project root:
+Generate a starter template:
+
+```bash
+chimera-memory hooks init
+```
+
+This creates `.chimera/hooks.toml` with commented examples for Python, Node, and TypeScript projects.
+
+Or create it manually:
 
 ```toml
 [claude_hooks]
@@ -103,6 +145,49 @@ docs, config) is included in scope. Use a narrower path only once you are
 confident the task will not touch files outside it.
 
 If your task edits both implementation and tests, your `scope_path` must cover both.
+
+**falsifier vs must_not_break:**
+
+- `falsifiers` — the primary command used to settle whether the claim held. If your task is a TypeScript type fix, `pnpm run build` should be in `falsifiers`, not only in `must_not_break`.
+- `must_not_break` — broader safety checks that must keep passing alongside the main task.
+
+If build or typecheck is the main proof that the task worked, include it in `falsifiers` too:
+
+```toml
+[claude_hooks]
+auto_lock = true
+scope_path = "."
+
+falsifiers = [
+  ["pnpm", "run", "build"]
+]
+
+must_not_break = [
+  ["pnpm", "run", "build"],
+  ["pnpm", "test"]
+]
+```
+
+---
+
+## Run the baseline check before starting
+
+Before starting the task, run your falsifier and `must_not_break` commands once:
+
+```bash
+# Python example:
+python3 -m pytest tests/test_my_area.py -q
+python3 -m pytest -q
+
+# TypeScript/Node example:
+pnpm run build
+pnpm run lint
+```
+
+If they already fail, either fix the baseline first or choose a narrower command that passes.
+
+**A pre-existing failure is baseline noise or `invocation_artifact`, not organic task evidence.**
+Do not use a falsifier that was already failing before you started.
 
 ---
 

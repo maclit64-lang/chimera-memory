@@ -324,3 +324,64 @@ def test_alpha_trial_mentions_both_xray_modes():
 def test_alpha_trial_recommends_dot_scope_path():
     text = _ALPHA_TRIAL.read_text()
     assert 'scope_path = "."' in text
+
+
+# ── v0.26.3 onboarding hardening guards ───────────────────────────────────────
+
+def test_no_condensedlabs_in_docs() -> None:
+    docs_root = Path(__file__).resolve().parents[3] / "docs"
+    for path in docs_root.rglob("*.md"):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        assert "condensedlabs/chimera-memory" not in text, (
+            f"{path} contains forbidden URL 'condensedlabs/chimera-memory'"
+        )
+
+
+def test_alpha_trial_mentions_maclit64_url() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "maclit64-lang/chimera-memory" in text
+
+
+def test_alpha_trial_mentions_git_init() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "git init" in text
+
+
+def test_alpha_trial_mentions_session_start() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "session start" in text
+
+
+def test_alpha_trial_explains_sessions_group_claims() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "session" in text.lower() and ("claim" in text.lower() or "receipt" in text.lower())
+
+
+def test_alpha_trial_mentions_baseline_check() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "baseline" in text.lower()
+
+
+def test_alpha_trial_pre_existing_not_organic_real() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "pre-existing" in text.lower() or "baseline noise" in text.lower()
+
+
+def test_alpha_trial_falsifier_before_task() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "before starting" in text.lower() or "before the task" in text.lower()
+
+
+def test_alpha_trial_build_typecheck_as_falsifier() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "falsifier" in text.lower() and ("build" in text.lower() or "typecheck" in text.lower())
+
+
+def test_alpha_trial_distinguishes_falsifier_from_must_not_break() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "falsifiers" in text and "must_not_break" in text
+
+
+def test_hooks_init_command_in_alpha_trial() -> None:
+    text = _ALPHA_TRIAL.read_text()
+    assert "hooks init" in text

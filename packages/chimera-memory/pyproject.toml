@@ -1,6 +1,6 @@
 [project]
 name = "chimera-memory"
-version = "0.26.2"
+version = "0.26.3"
 description = "Local-first reliability ledger for AI coding-agent work"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    "chimera-memory-types>=0.26.2,<1.0",
+    "chimera-memory-types>=0.26.3,<1.0",
     "filelock>=3.0",
 ]
 

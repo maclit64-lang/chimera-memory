@@ -54,6 +54,7 @@ def test_quickstart_no_overclaim(capsys) -> None:
 
 
 def test_init_shows_next_steps(tmp_path, monkeypatch, capsys) -> None:
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     main(["init"])
     out = capsys.readouterr().out
