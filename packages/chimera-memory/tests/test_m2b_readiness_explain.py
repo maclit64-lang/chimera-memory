@@ -131,7 +131,7 @@ def test_m2b_readiness_no_explain_json_unchanged(tmp_path, monkeypatch, capsys):
 
 def test_dependency_constraint_present():
     pyproject = (_REPO_ROOT / "packages" / "chimera-memory" / "pyproject.toml").read_text()
-    assert "chimera-memory-types>=0.26.4,<1.0" in pyproject
+    assert "chimera-memory-types>=0.26.5,<1.0" in pyproject
 
 
 # ---------------------------------------------------------------------------

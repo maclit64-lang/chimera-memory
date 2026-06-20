@@ -23,7 +23,7 @@ Chimera Memory is in public alpha for developers using AI coding agents.
 It is a local-first CLI that records what an AI coding agent claimed before editing, runs your real checks, settles the result, and generates `PR_EVIDENCE.md` for review.
 
 ```bash
-pip install chimera-memory==0.26.4
+pip install chimera-memory==0.26.5
 chimera-memory demo
 ```
 
@@ -230,7 +230,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: maclit64-lang/chimera-memory@v0.26.4
+      - uses: maclit64-lang/chimera-memory@v0.26.5
         with:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.sha }}
@@ -239,12 +239,10 @@ jobs:
 
 Full workflow with fork notes: [docs/examples/github-actions/pr-evidence.yml](../../docs/examples/github-actions/pr-evidence.yml).
 
-> **Action availability:** the `chimera-memory` package is published on PyPI at
-> 0.26.4, but the `@v0.26.4` *Action* reference above resolves only after a Git
-> release tag that includes `action.yml` is pushed to
-> `maclit64-lang/chimera-memory` (the current `v0.26.4` tag predates the Action).
-> For pre-release testing, pin the launch branch or a commit SHA — e.g.
-> `maclit64-lang/chimera-memory@oss/memory-launch`.
+> **Action availability:** `@v0.26.5` resolves once the `v0.26.5` release tag —
+> the first tag to include `action.yml` — is pushed to
+> `maclit64-lang/chimera-memory`. Until then, pin the launch branch or a commit
+> SHA for testing — e.g. `maclit64-lang/chimera-memory@oss/memory-launch`.
 
 ## Quickstart (5 commands)
 

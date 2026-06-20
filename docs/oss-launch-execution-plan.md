@@ -19,7 +19,8 @@ source of truth.
 
 - **Branch:** `oss/memory-launch`, cut from `chimera-memory-upstream/main`.
 - **Base commit:** `04a9b4fa5`.
-- **Version:** `0.26.4`.
+- **Version:** base `0.26.4`; the launch release candidate bumps both packages
+  to `0.26.5` in lockstep (see "Ticket sequence" → release closeout prep).
 - The standalone upstream line is canonical. The `court/crt-foundation` v0.6.1
   tree is **reference-only** (e.g. its granular evidence-smell taxonomy is a
   possible post-launch port candidate; not ported at launch).
@@ -62,11 +63,18 @@ source of truth.
   input defaults to `never` (CI gating is deferred, not part of L-002).
 - **L-002R — Release-readiness closeout (DONE, docs only).** Verified that the
   PyPI packages (`chimera-memory`/`chimera-memory-types` 0.26.4) are public but
-  the reusable Action is **not** consumable at `@v0.26.4` yet (no published Git
-  ref contains `action.yml`). Annotated the two Action references for honesty and
+  the reusable Action was **not** consumable at the existing `v0.26.4` tag
+  (which predates `action.yml`). Annotated the two Action references for honesty and
   produced the release/consumability checklist + manual PR smoke protocol in
   [`docs/release-action-readiness.md`](release-action-readiness.md). No tag,
   push, publish, or version change performed.
+- **Release closeout prep — `v0.26.5` RC (DONE, no publish).** Lockstep bump of
+  `chimera-memory` + `chimera-memory-types` 0.26.4 → 0.26.5 (dep bound
+  `>=0.26.5,<1.0`, lockfile updated); release note at
+  [`docs/releases/v0.26.5.md`](releases/v0.26.5.md); Action/docs examples now
+  reference `@v0.26.5`. `v0.26.4` left untouched (it maps to the shipped PyPI
+  build). Push/tag/publish commands are prepared but **NOT run** — awaiting
+  founder authorization (Path A).
 - **L-003 / L-004 — Later polish.** Verdict-vocabulary refinement, scope-drift
   severity classification, and other sharp-edge items as scoped.
 

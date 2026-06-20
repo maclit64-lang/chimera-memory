@@ -32,12 +32,11 @@ jobs:
         with:
           fetch-depth: 0  # full history so the base..head diff is available
 
-      # Availability: this pinned `@v0.26.4` ref resolves only AFTER a release
-      # tag that includes this repo's action.yml is published. The chimera-memory
-      # PyPI package is already at 0.26.4, but the matching Action tag is not cut
-      # yet. For pre-release testing, pin the launch branch or a commit SHA, e.g.
+      # Availability: this pinned `@v0.26.5` ref resolves only AFTER the v0.26.5
+      # release tag — the first tag to include this repo's action.yml — is pushed.
+      # For pre-release testing, pin the launch branch or a commit SHA, e.g.
       #   uses: maclit64-lang/chimera-memory@oss/memory-launch
-      - uses: maclit64-lang/chimera-memory@v0.26.4
+      - uses: maclit64-lang/chimera-memory@v0.26.5
         with:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.sha }}

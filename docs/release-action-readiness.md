@@ -3,23 +3,25 @@
 Closeout reference for the question: **can an outside repository consume the
 Chimera Memory Action and package exactly as documented?**
 
-Short answer at time of writing: the **package** is consumable from PyPI today;
-the **reusable Action** is not consumable at `@v0.26.4` yet because no published
-Git ref contains `action.yml`. This file lists what must happen to close that
-gap and how to smoke-test it. Nothing here has been executed — it is a plan.
+Short answer at time of writing: the prior **package** release (0.26.4) is on
+PyPI today; **this release candidate is 0.26.5** (not yet published), and the
+**reusable Action** is not consumable at `@v0.26.5` yet because that tag has not
+been pushed — no published Git ref yet contains `action.yml`. This file lists
+what must happen to close that gap and how to smoke-test it. Nothing here has
+been executed — it is a plan.
 
 ## Verified current state
 
 | Item | State | Evidence |
 |---|---|---|
 | Launch branch | `oss/memory-launch`, clean | `git status` empty |
-| HEAD | `03bb928fd` (L-002 docs commit), **untagged** | `git log --decorate` |
+| HEAD | release-candidate top of `oss/memory-launch`, **untagged** | `git log --decorate` |
 | `action.yml` first added in | `529c44483` (untagged) | `git log --diff-filter=A -- action.yml` |
 | Tag `v0.26.4` points to | `3099ffc11` (parent of base `04a9b4fa5`) | `git rev-list -n1 v0.26.4` |
 | `action.yml` in any tag | **No** | tag scan over `git tag --list` |
 | `oss/memory-launch` on a remote | **No** (local only) | `git branch -r --contains 529c44483` empty |
-| `chimera-memory` 0.26.4 on PyPI | **Yes** (released Jun 9, 2026) | pypi.org/project/chimera-memory |
-| `chimera-memory-types` 0.26.4 on PyPI | **Yes** | pypi.org simple index |
+| Prior release 0.26.4 on PyPI | **Yes** (`chimera-memory` + `-types`) | pypi.org |
+| This RC version | **0.26.5** (both packages), not yet on PyPI | `pyproject.toml` + `uv.lock` |
 
 Publish target for the Action: remote `chimera-memory-upstream` →
 `https://github.com/maclit64-lang/chimera-memory.git` (the repo named in
@@ -27,29 +29,24 @@ Publish target for the Action: remote `chimera-memory-upstream` →
 
 ## The one gap
 
-`uses: maclit64-lang/chimera-memory@v0.26.4` (in the README Action section and
-`docs/examples/github-actions/pr-evidence.yml`) resolves to the `v0.26.4` tree,
-which has **no `action.yml`**. An external workflow pinning that ref fails with
-"Can't find 'action.yml'". The PyPI install step the Action runs is fine —
-0.26.4 is public — so this is purely a Git-ref/tag gap, not a packaging gap.
+The docs now reference `uses: maclit64-lang/chimera-memory@v0.26.5` (README
+Action section + `docs/examples/github-actions/pr-evidence.yml`). That tag does
+not exist yet, so until it is pushed an external workflow pinning it fails with
+"Can't find 'action.yml'". The PyPI install step the Action runs works once
+0.26.5 is published — so this is a Git-ref/tag + publish gap, not a code gap.
 
-The docs have been annotated to say so and to offer a pre-release pin
-(`@oss/memory-launch`) until an Action tag exists.
+The docs are annotated to say so and offer a pre-release pin
+(`@oss/memory-launch`) until the `v0.26.5` tag is pushed.
 
-## Tag decision (resolve before tagging — do NOT force blindly)
+## Tag decision (made)
 
-`v0.26.4` already exists at `3099ffc11` and corresponds to the **published PyPI
-build**. Making `@v0.26.4` an Action requires a ref that includes `action.yml`,
-i.e. the launch commit. Two honest options — a human must choose:
-
-- **A. Re-point `v0.26.4`** to the launch commit. Requires a force tag move on a
-  tag that maps to a shipped PyPI artifact; the launch commit then becomes the
-  canonical 0.26.4 source. Update nothing else in docs.
-- **B. Cut a new Action ref** (e.g. a fresh patch tag, or a moving major tag such
-  as `v0` / `v0.26`) at the launch commit and update the two doc references to
-  match. Leaves the existing `v0.26.4` ↔ PyPI mapping untouched.
-
-Option B avoids rewriting a published tag and is the lower-risk default.
+**Decision: cut a new patch release `v0.26.5` at the launch commit; do NOT
+force-move `v0.26.4`.** `v0.26.4` already exists at `3099ffc11` and maps to the
+shipped PyPI build; rewriting it would break users who rely on that tag/package.
+A fresh `v0.26.5` tag is the first ref to include `action.yml`, and the docs now
+point at `@v0.26.5`. Both packages are bumped 0.26.4 → 0.26.5 in lockstep
+(`chimera-memory-types` is a no-functional-change version-sync that keeps the
+`chimera-memory-types>=0.26.5,<1.0` dependency satisfiable).
 
 ## Action-consumability checklist (release closeout)
 
@@ -57,10 +54,10 @@ Option B avoids rewriting a published tag and is the lower-risk default.
        (`git push chimera-memory-upstream oss/memory-launch`).
 2. [ ] Confirm CI is green on the pushed branch (the repo's `chimera-memory-ci`
        workflow runs pytest + mypy + ruff).
-3. [ ] Confirm `chimera-memory==0.26.4` and `chimera-memory-types==0.26.4` are
-       installable from PyPI (already published — re-verify they still resolve).
-4. [ ] Decide the tag strategy above, then create/push the chosen Action ref at
-       the launch commit that includes `action.yml`.
+3. [ ] Publish `chimera-memory==0.26.5` and `chimera-memory-types==0.26.5` to
+       PyPI (0.26.4 is already public; 0.26.5 is this release).
+4. [ ] Create and push the `v0.26.5` tag at the launch commit (the first ref
+       that includes `action.yml`).
 5. [ ] On GitHub, confirm the repo renders the Action (the "marketplace"/Action
        metadata loads from `action.yml` at that ref).
 6. [ ] In a separate test repo, exercise the Action (see smoke protocol):
