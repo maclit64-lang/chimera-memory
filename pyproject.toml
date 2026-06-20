@@ -8,6 +8,7 @@ members = [
 dev = [
     "mypy>=1.0",
     "pytest>=9.0",
+    "pyyaml>=6.0",
     "ruff>=0.3",
 ]
 
