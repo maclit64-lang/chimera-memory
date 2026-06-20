@@ -239,6 +239,13 @@ jobs:
 
 Full workflow with fork notes: [docs/examples/github-actions/pr-evidence.yml](../../docs/examples/github-actions/pr-evidence.yml).
 
+> **Action availability:** the `chimera-memory` package is published on PyPI at
+> 0.26.4, but the `@v0.26.4` *Action* reference above resolves only after a Git
+> release tag that includes `action.yml` is pushed to
+> `maclit64-lang/chimera-memory` (the current `v0.26.4` tag predates the Action).
+> For pre-release testing, pin the launch branch or a commit SHA — e.g.
+> `maclit64-lang/chimera-memory@oss/memory-launch`.
+
 ## Quickstart (5 commands)
 
 ```bash

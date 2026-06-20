@@ -51,7 +51,7 @@ source of truth.
   3. Duplicate working-tree-warning audit + dedupe.
   4. README hero focus on `PR_EVIDENCE.md`.
   5. This execution-plan doc.
-- **L-002 — Reusable GitHub Action / Receipt-on-PR (in progress).** Distribution
+- **L-002 — Reusable GitHub Action / Receipt-on-PR (DONE).** Distribution
   layer: a composite repo-root `action.yml` installs Chimera Memory, generates
   `PR_EVIDENCE.md` for the PR diff, and surfaces it three ways — a sticky PR
   comment, a job step summary, and an uploaded artifact. Fork-safe: a restricted
@@ -60,6 +60,13 @@ source of truth.
   existing `verdict_label`/`counts`) and an example workflow at
   `docs/examples/github-actions/pr-evidence.yml`. Advisory only; the `fail-on`
   input defaults to `never` (CI gating is deferred, not part of L-002).
+- **L-002R — Release-readiness closeout (DONE, docs only).** Verified that the
+  PyPI packages (`chimera-memory`/`chimera-memory-types` 0.26.4) are public but
+  the reusable Action is **not** consumable at `@v0.26.4` yet (no published Git
+  ref contains `action.yml`). Annotated the two Action references for honesty and
+  produced the release/consumability checklist + manual PR smoke protocol in
+  [`docs/release-action-readiness.md`](release-action-readiness.md). No tag,
+  push, publish, or version change performed.
 - **L-003 / L-004 — Later polish.** Verdict-vocabulary refinement, scope-drift
   severity classification, and other sharp-edge items as scoped.
 
