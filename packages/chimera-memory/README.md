@@ -4,6 +4,18 @@ Local-first reliability ledger for AI coding-agent work.
 
 Records what an agent tried, which command verified it, what happened, and what receipt proves it. Everything stays on your machine — no cloud, no sync, no account required.
 
+**Your AI agent says it's done. Chimera Memory makes it prove it.** It produces
+**`PR_EVIDENCE.md`** — a local proof-carrying receipt for AI-written code that shows
+which changed files have settled claim coverage, which evidence is weak, missing,
+contradicted, or scope-drifted, and what the evidence does *not* prove. It scores
+evidence quality, not code correctness.
+
+Generate it on your branch:
+
+```bash
+chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
+```
+
 ## Public alpha
 
 Chimera Memory is in public alpha for developers using AI coding agents.
