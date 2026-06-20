@@ -1,0 +1,40 @@
+# Example: Chimera Memory — PR Evidence (Receipt-on-PR)
+#
+# Copy this into `.github/workflows/chimera-pr-evidence.yml` in your repo.
+#
+# On every pull request it generates a local PR_EVIDENCE.md Merge X-Ray and
+# surfaces it three ways:
+#   1. a sticky PR comment (when the workflow has pull-requests: write)
+#   2. a job step summary (always)
+#   3. an uploaded artifact named "chimera-pr-evidence" (always)
+#
+# Fork PRs: GitHub restricts the token on PRs from forks, so the sticky
+# comment may be skipped. The step summary and artifact are still produced,
+# and the job does NOT fail because of the missing comment permission.
+#
+# Honesty: this scores evidence quality, not code correctness. It never
+# claims code is correct, safe, production-ready, or approved to merge.
+
+name: Chimera Memory Evidence
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so the base..head diff is available
+
+      - uses: maclit64-lang/chimera-memory@v0.26.4
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.sha }}
+          output: PR_EVIDENCE.md
+          comment: "true"

@@ -204,6 +204,41 @@ evidence-dark changes, scope drift, and a reviewer-focus list. It reports
 correct. See [docs/examples/claim-locked-coding.md](../../docs/examples/claim-locked-coding.md)
 and [docs/examples/pr-evidence-example.md](../../docs/examples/pr-evidence-example.md).
 
+### Run it on every pull request (GitHub Action)
+
+Add Chimera Memory to a repository's pull-request workflow to post the receipt
+automatically. The reusable Action generates `PR_EVIDENCE.md` for the PR diff and
+surfaces it three ways: a sticky PR comment, a job step summary, and an uploaded
+artifact. On fork PRs — where the comment token is restricted — it falls back to
+the step summary and artifact without failing the job. Like the local receipt, it
+reports evidence quality, not code correctness.
+
+```yaml
+name: Chimera Memory Evidence
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: maclit64-lang/chimera-memory@v0.26.4
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.sha }}
+          output: PR_EVIDENCE.md
+```
+
+Full workflow with fork notes: [docs/examples/github-actions/pr-evidence.yml](../../docs/examples/github-actions/pr-evidence.yml).
+
 ## Quickstart (5 commands)
 
 ```bash

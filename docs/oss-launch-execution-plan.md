@@ -44,15 +44,22 @@ source of truth.
 ## Ticket sequence
 
 - **L-000 — Baseline (DONE).** Establish branch; prove tests/demo/build/install.
-- **L-001 — Launch polish (in progress).**
+- **L-001 — Launch polish (DONE).** Shipped on `oss/memory-launch`:
   1. `python -m chimera_memory` entrypoint (`__main__.py`).
   2. At-a-glance verdict banner on `PR_EVIDENCE.md` (derived from the existing
      verdict model; no new scoring).
   3. Duplicate working-tree-warning audit + dedupe.
   4. README hero focus on `PR_EVIDENCE.md`.
   5. This execution-plan doc.
-- **L-002 — Reusable GitHub Action / Receipt-on-PR (next).** Distribution layer:
-  run the X-Ray on PRs and surface the receipt. Not started.
+- **L-002 — Reusable GitHub Action / Receipt-on-PR (in progress).** Distribution
+  layer: a composite repo-root `action.yml` installs Chimera Memory, generates
+  `PR_EVIDENCE.md` for the PR diff, and surfaces it three ways — a sticky PR
+  comment, a job step summary, and an uploaded artifact. Fork-safe: a restricted
+  comment token degrades to summary + artifact and never fails the job. Adds a
+  `--format pr-comment` X-Ray output (no new evidence semantics — built from the
+  existing `verdict_label`/`counts`) and an example workflow at
+  `docs/examples/github-actions/pr-evidence.yml`. Advisory only; the `fail-on`
+  input defaults to `never` (CI gating is deferred, not part of L-002).
 - **L-003 / L-004 — Later polish.** Verdict-vocabulary refinement, scope-drift
   severity classification, and other sharp-edge items as scoped.
 
