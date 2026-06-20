@@ -1182,6 +1182,15 @@ def _build_parser() -> argparse.ArgumentParser:
     xray_generate.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON instead of Markdown"
     )
+    xray_generate.add_argument(
+        "--format", dest="xray_format", choices=["markdown", "pr-comment"],
+        default="markdown",
+        help=(
+            "Output format for stdout: 'markdown' (default, full report) or "
+            "'pr-comment' (concise summary for a PR comment). --output always "
+            "writes the full Markdown report regardless of --format."
+        ),
+    )
     xray_generate.set_defaults(command="xray", xray_command="generate")
 
     # ── mcp serve ──────────────────────────────────────────────────
@@ -3621,7 +3630,7 @@ def _xray(parsed: argparse.Namespace) -> int:
     """Handle xray generate."""
     import sys
 
-    from chimera_memory.xray import generate_xray, render_markdown
+    from chimera_memory.xray import generate_xray, render_markdown, render_pr_comment
 
     sub = getattr(parsed, "xray_command", None)
     if sub != "generate":
@@ -3655,6 +3664,12 @@ def _xray(parsed: argparse.Namespace) -> int:
         out_path = Path(output)
         out_path.write_text(markdown, encoding="utf-8")
         print(f"Wrote {out_path}")
+
+    fmt = getattr(parsed, "xray_format", "markdown")
+    if fmt == "pr-comment":
+        print(render_pr_comment(result))
+    elif output:
+        # Full report already written to the file; echo the verdict to stdout.
         print(f"\n{result['verdict']}")
     else:
         print(markdown)

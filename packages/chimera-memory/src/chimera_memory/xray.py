@@ -541,6 +541,42 @@ def render_markdown(xray: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _present_absent(n: int) -> str:
+    return "present" if n else "absent"
+
+
+def render_pr_comment(xray: dict[str, Any]) -> str:
+    """Render a concise PR-comment summary from the X-Ray result.
+
+    Built only from fields already produced by :func:`generate_xray`
+    (``verdict_label``, ``counts``); it adds no new evidence semantics.
+    Uses review-oriented language only — never correctness, safety, or
+    approval wording.
+    """
+    counts = xray.get("counts", {})
+    label = xray.get("verdict_label", "REVIEW REQUIRED")
+    scope_drift = int(counts.get("scope_drift", 0))
+    evidence_dark = int(counts.get("evidence_dark_source", counts.get("evidence_dark", 0)))
+    contradicted = int(counts.get("contradicted", 0))
+    unsettled = int(counts.get("unsettled", 0))
+    return "\n".join(
+        [
+            "## Chimera Memory Evidence Receipt",
+            "",
+            f"**Verdict:** {label}",
+            "",
+            "This scores evidence quality, not code correctness.",
+            "",
+            f"- Scope drift: {_present_absent(scope_drift)}",
+            f"- Evidence-dark changes: {_present_absent(evidence_dark)}",
+            f"- Contradicted claims: {contradicted}",
+            f"- Unsettled claims: {unsettled}",
+            "",
+            "Full receipt: `PR_EVIDENCE.md`",
+        ]
+    )
+
+
 def _render_claim_block(claim: dict[str, Any]) -> list[str]:
     lines = [f"### {claim['status']} — {claim['intent']}", ""]
     lines.append(f"- Scope: `{claim['scope_path']}`")

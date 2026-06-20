@@ -1,0 +1,135 @@
+name: "Chimera Memory — PR Evidence"
+description: >-
+  Generate a local PR_EVIDENCE.md Merge X-Ray for a pull request and surface it
+  as a step summary, an uploaded artifact, and (when permitted) a sticky PR
+  comment. Scores evidence quality, not code correctness.
+author: "ORIAS"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  base:
+    description: "Base ref to diff from (e.g. the PR base SHA). Falls back to 'main'."
+    required: false
+    default: ""
+  head:
+    description: "Head ref to diff to (defaults to HEAD)."
+    required: false
+    default: "HEAD"
+  output:
+    description: "Path to write the full Markdown receipt."
+    required: false
+    default: "PR_EVIDENCE.md"
+  comment:
+    description: "Post (or update) a sticky PR comment when permitted."
+    required: false
+    default: "true"
+  fail-on:
+    description: >-
+      Reserved for a future opt-in evidence gate. In this version the Action is
+      advisory only and never fails the job based on the verdict.
+    required: false
+    default: "never"
+  python-version:
+    description: "Python version used to run Chimera Memory."
+    required: false
+    default: "3.12"
+  version:
+    description: "chimera-memory version specifier to install (e.g. '==0.26.4'). Empty = latest."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Chimera Memory
+      shell: bash
+      run: python -m pip install --quiet "chimera-memory${{ inputs.version }}"
+
+    - name: Generate PR evidence receipt
+      id: evidence
+      shell: bash
+      env:
+        CM_BASE: ${{ inputs.base }}
+        CM_HEAD: ${{ inputs.head }}
+        CM_OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        base_arg=()
+        if [ -n "${CM_BASE}" ]; then
+          base_arg=(--base "${CM_BASE}" --head "${CM_HEAD}")
+        fi
+        # Writes the full Markdown report to $CM_OUTPUT and prints the
+        # compact PR comment to stdout, which we capture for later steps.
+        chimera-memory xray generate "${base_arg[@]}" \
+          --output "${CM_OUTPUT}" \
+          --format pr-comment > pr_comment.md
+        cat pr_comment.md
+
+    - name: Write job summary
+      if: always()
+      shell: bash
+      run: |
+        if [ -f pr_comment.md ]; then
+          cat pr_comment.md >> "${GITHUB_STEP_SUMMARY}"
+        fi
+
+    - name: Upload receipt artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: chimera-pr-evidence
+        path: ${{ inputs.output }}
+        if-no-files-found: warn
+
+    - name: Post sticky PR comment
+      # Skips gracefully on forks / missing token / non-PR events. Never fails the job.
+      if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      continue-on-error: true
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          if (!fs.existsSync('pr_comment.md')) {
+            core.info('No pr_comment.md found; skipping comment.');
+            return;
+          }
+          const marker = '<!-- chimera-memory-pr-evidence -->';
+          const body = marker + '\n' + fs.readFileSync('pr_comment.md', 'utf8');
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          if (!issue_number) {
+            core.info('No PR number in context; skipping comment.');
+            return;
+          }
+          try {
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number },
+            );
+            const existing = comments.find(
+              (c) => c.body && c.body.includes(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
+          } catch (err) {
+            core.warning(
+              'Could not post PR comment (likely a fork or missing ' +
+              'pull-requests: write permission). The receipt is still ' +
+              'available as a step summary and an uploaded artifact. ' +
+              String(err),
+            );
+          }
