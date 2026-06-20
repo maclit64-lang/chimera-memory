@@ -226,6 +226,14 @@ def generate_xray(
         diff_mode=diff_mode,
     )
 
+    verdict_label = _verdict_label(
+        post_hoc=post_hoc,
+        contradicted=contradicted,
+        unsettled=unsettled,
+        evidence_dark_source=evidence_dark_classified["source_files"],
+        scope_drift=scope_drift,
+    )
+
     reviewer_focus = _build_reviewer_focus(
         evidence_dark_source=evidence_dark_classified["source_files"],
         evidence_dark_cache=evidence_dark_classified["likely_cache_or_build"],
@@ -245,6 +253,7 @@ def generate_xray(
         },
         "working_tree_warning": working_tree_warning,
         "verdict": verdict,
+        "verdict_label": verdict_label,
         "changed_files": changed_files,
         "settled_claims": settled_view,
         "evidence_dark_files": evidence_dark,
@@ -325,6 +334,27 @@ def _build_verdict(
     )
 
 
+def _verdict_label(
+    *,
+    post_hoc: bool,
+    contradicted: list[dict[str, Any]],
+    unsettled: list[dict[str, Any]],
+    evidence_dark_source: list[str],
+    scope_drift: list[str],
+) -> str:
+    """Derive a short, at-a-glance banner label from existing verdict inputs.
+
+    This adds no new scoring: it reduces the already-computed signals to a
+    one-glance label using review-oriented language only (never correctness,
+    safety, or approval wording).
+    """
+    if post_hoc:
+        return "REVIEW REQUIRED"
+    if contradicted or unsettled or evidence_dark_source or scope_drift:
+        return "REVIEW REQUIRED"
+    return "COVERED — review still advised"
+
+
 def _build_reviewer_focus(
     *,
     evidence_dark_source: list[str],
@@ -385,12 +415,20 @@ def render_markdown(xray: dict[str, Any]) -> str:
             "",
         ]
 
-    # Warning box if present
-    warning = xray.get("working_tree_warning")
-    if warning and diff_mode == "working_tree":
-        lines += [f"> ⚠️  {warning}", ""]
+    # Warning box: intentionally omitted in Markdown — the working-tree-mode
+    # blockquote above already states this guidance. The structured
+    # ``working_tree_warning`` field remains in the JSON output for API
+    # consumers; duplicating it here only adds visual noise.
 
-    lines += ["## Verdict", "", xray["verdict"], ""]
+    label = xray.get("verdict_label", "REVIEW REQUIRED")
+    lines += [
+        f"## Verdict: {label}",
+        "",
+        "_This report scores evidence quality, not code correctness._",
+        "",
+        xray["verdict"],
+        "",
+    ]
 
     # Settled claims
     lines += ["## Settled Claims", ""]
