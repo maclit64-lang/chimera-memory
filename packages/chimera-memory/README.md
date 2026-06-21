@@ -16,6 +16,75 @@ Generate it on your branch:
 chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
 ```
 
+## What you get
+
+- **`PR_EVIDENCE.md`** — a local, proof-carrying receipt for the PR diff.
+- A verdict banner (`REVIEW REQUIRED` / `COVERED — review still advised`).
+- **Evidence Quality**, **Test Integrity**, and **Evidence Coverage** warnings.
+- An **optional CI evidence gate** (`fail-on`) — off by default.
+
+## Choose your mode
+
+**1. Local receipt (CLI).**
+
+```bash
+chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
+```
+
+**2. GitHub Action — advisory (default).** Posts the receipt on every PR; never fails CI.
+
+```yaml
+- uses: maclit64-lang/chimera-memory@v0.27.0
+  with:
+    fail-on: never
+```
+
+**3. GitHub Action — gated (opt-in).** Fails the PR only when the evidence policy is not met.
+
+```yaml
+- uses: maclit64-lang/chimera-memory@v0.27.0
+  with:
+    fail-on: warnings
+```
+
+> Until `v0.27.0` is tagged and published, pin the release branch or a commit SHA
+> for testing (e.g. `maclit64-lang/chimera-memory@oss/memory-v0270-rc`). The gate
+> enforces evidence policy — it does not prove code is correct or incorrect.
+
+## Warning types
+
+| Warning family | Meaning |
+|---|---|
+| Evidence Quality | The recorded commands may be weak — lint-only, zero tests collected, or green-only with no regression test. |
+| Test Integrity | The diff may weaken tests — added skips/xfails, focus-only tests, or a deleted test file. |
+| Evidence Coverage | Changed source exists, but no settled command obviously targets it or nearby tests. |
+
+Warnings are review prompts. They do not prove the code is wrong or correct.
+
+## What this does not prove
+
+Chimera Memory scores **evidence quality, not code correctness**. It shows which
+claims settled against which checks at which declared scope. It does **not** prove
+the code is correct, secure, or complete, and it does not rank or route models.
+
+## FAQ
+
+**Does Chimera Memory prove my code is correct?** No. It scores evidence quality,
+not code correctness.
+
+**What do I do when the verdict says review required?** Add targeted evidence (a
+test that names the changed file or module), resolve contradicted claims, or
+review the changed files manually.
+
+**Should I fail CI by default?** No — start in advisory mode (`fail-on: never`).
+Enable a stricter `fail-on` once your team agrees on a policy.
+
+**What's the best first command?** Generate `PR_EVIDENCE.md` for a PR diff:
+`chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md`.
+
+**Does it send my code to a cloud service?** No. Everything stays on your machine
+— no cloud, no sync, no account.
+
 ## Public alpha
 
 Chimera Memory is in public alpha for developers using AI coding agents.
