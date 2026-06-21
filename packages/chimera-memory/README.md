@@ -255,6 +255,18 @@ Full workflow with fork notes: [docs/examples/github-actions/pr-evidence.yml](..
 > `maclit64-lang/chimera-memory`. Until then, pin the launch branch or a commit
 > SHA for testing — e.g. `maclit64-lang/chimera-memory@oss/memory-launch`.
 
+**Optional: fail the PR on weak evidence.** The Action is advisory by default
+(`fail-on: never`). Set a stricter policy to fail CI when evidence is weak:
+
+```yaml
+with:
+  fail-on: warnings   # also: review-required, contradicted,
+                      # evidence-quality-warnings, test-integrity-warnings, …
+```
+
+The gate enforces evidence policy — it does not prove the code is correct or
+incorrect — and the receipt is still produced when the gate fails.
+
 ## Quickstart (5 commands)
 
 ```bash

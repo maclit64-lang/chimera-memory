@@ -91,8 +91,17 @@ source of truth.
   Added small read-only git diff helpers (added lines + deleted files); no
   schema rewrite. Advisory only — they flag possible test weakening, never
   correctness. Built on a separate worktree; release RC `c8e6526bf` unchanged.
-- **L-005 / L-003B — Later product tickets** (opt-in CI evidence gate;
-  stale-evidence / changed-files-not-exercised). Not started.
+- **L-005 — Opt-in CI evidence gate (DONE).** A pure `evaluate_evidence_gate`
+  policy over existing X-Ray fields (verdict label + warning/claim counts; no new
+  heuristics), exposed via `xray generate --fail-on <policy>` (default `never`,
+  exit 2 on policy failure, gate messages to stderr) and the Action's `fail-on`
+  input. Policies: never, review-required, warnings, evidence-quality-warnings,
+  test-integrity-warnings, contradicted, unsettled, scope-drift, evidence-dark.
+  The Action's gate step runs last so the receipt/summary/artifact/comment are
+  produced first. Advisory by default — enforces evidence policy, never code
+  correctness. Separate worktree; release RC `c8e6526bf` unchanged.
+- **L-003B — Later product ticket** (stale-evidence / changed-files-not-exercised
+  warnings). Not started.
 
 ## Out of scope (do not build yet)
 

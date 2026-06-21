@@ -42,3 +42,10 @@ jobs:
           head: ${{ github.sha }}
           output: PR_EVIDENCE.md
           comment: "true"
+          # Opt-in evidence gate. Default 'never' = advisory only (never fails CI).
+          # Set a stricter policy to fail the PR when evidence is weak, e.g.:
+          #   fail-on: warnings   # fails if evidence-quality OR test-integrity warnings exist
+          # Other policies: review-required, evidence-quality-warnings,
+          # test-integrity-warnings, contradicted, unsettled, scope-drift, evidence-dark.
+          # The gate enforces evidence policy. It does not prove code is correct or incorrect.
+          fail-on: never
