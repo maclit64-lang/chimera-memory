@@ -30,6 +30,7 @@ artefacts as evidence-dark entries.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -351,6 +352,89 @@ def detect_test_integrity_warnings(
             seen.add(("TEST_FILE_DELETED", path))
 
     return warnings
+
+
+# ── Opt-in evidence gate (policy enforcement, L-005) ──────────────────────
+# A pure policy function over already-computed X-Ray fields. It enforces an
+# explicit evidence policy; it never claims the code is correct or incorrect.
+
+EVIDENCE_GATE_POLICIES = (
+    "never",
+    "review-required",
+    "warnings",
+    "evidence-quality-warnings",
+    "test-integrity-warnings",
+    "contradicted",
+    "unsettled",
+    "scope-drift",
+    "evidence-dark",
+)
+
+
+@dataclass(frozen=True)
+class EvidenceGateResult:
+    policy: str
+    passed: bool
+    reasons: tuple[str, ...]
+
+
+def evaluate_evidence_gate(
+    xray_result: Mapping[str, Any],
+    *,
+    fail_on: str,
+) -> EvidenceGateResult:
+    """Evaluate an opt-in evidence policy over an X-Ray result.
+
+    Deterministic and side-effect free, using only already-computed fields.
+    ``never`` always passes. Reasons use review-oriented language only; the gate
+    enforces evidence policy and never asserts code correctness.
+    """
+    if fail_on not in EVIDENCE_GATE_POLICIES:
+        raise ValueError(
+            f"unknown evidence gate policy: {fail_on!r}; "
+            f"valid policies: {', '.join(EVIDENCE_GATE_POLICIES)}"
+        )
+    if fail_on == "never":
+        return EvidenceGateResult("never", True, ())
+
+    counts = xray_result.get("counts", {})
+    label = xray_result.get("verdict_label", "")
+    eq = int(counts.get("evidence_quality_warnings", 0))
+    ti = int(counts.get("test_integrity_warnings", 0))
+    contradicted = int(counts.get("contradicted", 0))
+    unsettled = int(counts.get("unsettled", 0))
+    scope_drift = int(counts.get("scope_drift", 0))
+    evidence_dark = int(counts.get("evidence_dark_source", counts.get("evidence_dark", 0)))
+
+    reasons: list[str] = []
+    if fail_on == "review-required":
+        if label == "REVIEW REQUIRED":
+            reasons.append("verdict is REVIEW REQUIRED")
+    elif fail_on == "warnings":
+        if eq:
+            reasons.append(f"evidence quality warnings present ({eq})")
+        if ti:
+            reasons.append(f"test integrity warnings present ({ti})")
+    elif fail_on == "evidence-quality-warnings":
+        if eq:
+            reasons.append(f"evidence quality warnings present ({eq})")
+    elif fail_on == "test-integrity-warnings":
+        if ti:
+            reasons.append(f"test integrity warnings present ({ti})")
+    elif fail_on == "contradicted":
+        if contradicted:
+            reasons.append(f"contradicted claims present ({contradicted})")
+    elif fail_on == "unsettled":
+        if unsettled:
+            reasons.append(f"unsettled claims present ({unsettled})")
+    elif fail_on == "scope-drift":
+        if scope_drift:
+            reasons.append(f"scope drift present ({scope_drift})")
+    elif fail_on == "evidence-dark":
+        if evidence_dark:
+            reasons.append(f"evidence-dark changes present ({evidence_dark})")
+
+    return EvidenceGateResult(fail_on, not reasons, tuple(reasons))
 
 
 def generate_xray(

@@ -1191,6 +1191,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "writes the full Markdown report regardless of --format."
         ),
     )
+    xray_generate.add_argument(
+        "--fail-on", dest="xray_fail_on",
+        choices=[
+            "never", "review-required", "warnings", "evidence-quality-warnings",
+            "test-integrity-warnings", "contradicted", "unsettled", "scope-drift",
+            "evidence-dark",
+        ],
+        default="never",
+        help=(
+            "Opt-in evidence gate: exit nonzero when the policy is not met. "
+            "Default 'never' (advisory only — never fails). Enforces evidence "
+            "policy, not code correctness."
+        ),
+    )
     xray_generate.set_defaults(command="xray", xray_command="generate")
 
     # ── mcp serve ──────────────────────────────────────────────────
@@ -3626,6 +3640,35 @@ def _format_claim_text(record: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _apply_evidence_gate(result: dict, fail_on: str) -> int:
+    """Evaluate the opt-in evidence gate after the receipt is produced.
+
+    Gate messages go to stderr so stdout (e.g. the pr-comment) stays clean.
+    Returns 0 when the policy passes or is 'never', and 2 when the policy is not
+    met. The gate enforces evidence policy, not code correctness.
+    """
+    import sys as _sys
+
+    from chimera_memory.xray import evaluate_evidence_gate
+
+    if fail_on == "never":
+        print("Chimera Memory evidence gate disabled: fail-on=never.", file=_sys.stderr)
+        return 0
+    gate = evaluate_evidence_gate(result, fail_on=fail_on)
+    if gate.passed:
+        print(f"Chimera Memory evidence gate passed: policy '{fail_on}'.", file=_sys.stderr)
+        return 0
+    print(
+        f"Chimera Memory evidence gate failed: policy '{fail_on}' was not met.",
+        file=_sys.stderr,
+    )
+    print("This scores evidence quality, not code correctness.", file=_sys.stderr)
+    print("See PR_EVIDENCE.md for details.", file=_sys.stderr)
+    for reason in gate.reasons:
+        print(f"  - {reason}", file=_sys.stderr)
+    return 2
+
+
 def _xray(parsed: argparse.Namespace) -> int:
     """Handle xray generate."""
     import sys
@@ -3656,7 +3699,7 @@ def _xray(parsed: argparse.Namespace) -> int:
 
     if parsed.json:
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
+        return _apply_evidence_gate(result, getattr(parsed, "xray_fail_on", "never"))
 
     markdown = render_markdown(result)
     output = getattr(parsed, "xray_output", None)
@@ -3673,7 +3716,7 @@ def _xray(parsed: argparse.Namespace) -> int:
         print(f"\n{result['verdict']}")
     else:
         print(markdown)
-    return 0
+    return _apply_evidence_gate(result, getattr(parsed, "xray_fail_on", "never"))
 
 
 def _hooks(parsed: argparse.Namespace) -> int:
