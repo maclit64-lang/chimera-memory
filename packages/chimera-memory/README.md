@@ -215,6 +215,12 @@ skip/xfail, a focus-only marker (`it.only`, `fdescribe`), or a deleted test file
 — the receipt adds an advisory `## Test Integrity Warnings` section. These are
 review prompts too: they do not prove the code is wrong or correct.
 
+**Evidence Coverage Warnings.** When source files change but the settled commands
+don't obviously target them or nearby tests, the receipt adds an advisory
+`## Evidence Coverage Warnings` section ("no obvious targeted evidence for changed
+source"). Like the others, these are review prompts — they do not prove the code
+is wrong or correct.
+
 ### Run it on every pull request (GitHub Action)
 
 Add Chimera Memory to a repository's pull-request workflow to post the receipt

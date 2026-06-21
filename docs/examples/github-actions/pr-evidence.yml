@@ -46,6 +46,7 @@ jobs:
           # Set a stricter policy to fail the PR when evidence is weak, e.g.:
           #   fail-on: warnings   # fails if evidence-quality OR test-integrity warnings exist
           # Other policies: review-required, evidence-quality-warnings,
-          # test-integrity-warnings, contradicted, unsettled, scope-drift, evidence-dark.
+          # test-integrity-warnings, evidence-coverage-warnings, contradicted,
+          # unsettled, scope-drift, evidence-dark.
           # The gate enforces evidence policy. It does not prove code is correct or incorrect.
           fail-on: never

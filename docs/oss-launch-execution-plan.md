@@ -100,8 +100,18 @@ source of truth.
   The Action's gate step runs last so the receipt/summary/artifact/comment are
   produced first. Advisory by default — enforces evidence policy, never code
   correctness. Separate worktree; release RC `c8e6526bf` unchanged.
-- **L-003B — Later product ticket** (stale-evidence / changed-files-not-exercised
-  warnings). Not started.
+- **L-003B — Evidence Coverage Warnings (DONE).** Advisory
+  `NO_TARGETED_EVIDENCE_FOR_CHANGED_SOURCE`: source files changed but no settled
+  command obviously targets them or nearby tests (conservative — built only from
+  changed files + settled command text; never flags docs/test-only changes or
+  missing evidence). Separate `## Evidence Coverage Warnings` section + compact
+  PR-comment count; additive result/counts; included in the gate
+  (`fail-on=warnings` plus a new `evidence-coverage-warnings` policy).
+  `STALE_EVIDENCE` **deferred**: the ledger has `settled_at` but no reliable,
+  unambiguous "current diff state" timestamp (especially working-tree mode), so
+  honest staleness cannot be proven without false positives. Advisory only —
+  never says "untested", never asserts correctness. Separate worktree; release
+  RC `c8e6526bf` unchanged.
 
 ## Out of scope (do not build yet)
 
