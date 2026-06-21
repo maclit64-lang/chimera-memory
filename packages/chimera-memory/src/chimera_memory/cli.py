@@ -1195,8 +1195,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fail-on", dest="xray_fail_on",
         choices=[
             "never", "review-required", "warnings", "evidence-quality-warnings",
-            "test-integrity-warnings", "contradicted", "unsettled", "scope-drift",
-            "evidence-dark",
+            "test-integrity-warnings", "evidence-coverage-warnings", "contradicted",
+            "unsettled", "scope-drift", "evidence-dark",
         ],
         default="never",
         help=(

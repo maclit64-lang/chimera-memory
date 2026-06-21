@@ -354,6 +354,93 @@ def detect_test_integrity_warnings(
     return warnings
 
 
+# ── Evidence Coverage Warnings (advisory, L-003B) ─────────────────────────
+# Conservative: did the settled evidence obviously target what changed? Built
+# only from existing data (changed files + settled command text). Never says
+# "untested"; never asserts correctness.
+
+_SOURCE_EXT_RE = re.compile(r"\.(py|ts|tsx|js|jsx|go|rs|java|kt|rb|php)$", re.IGNORECASE)
+_COVERAGE_EXCLUDE_RE = re.compile(r"(^|/)docs/|(^|/)readme|\.(md|ya?ml|toml|lock)$", re.IGNORECASE)
+
+
+def _is_source_file(path: str) -> bool:
+    """Source-like file (not a test, doc, or config) eligible for coverage checks."""
+    p = path.replace("\\", "/")
+    if _is_test_file(p) or _COVERAGE_EXCLUDE_RE.search(p):
+        return False
+    return bool(_SOURCE_EXT_RE.search(p))
+
+
+def _command_targets_file(command_text: str, path: str) -> bool:
+    """Conservative (generous) check that a command obviously targets a file.
+
+    Errs toward 'targeted' so the coverage warning stays advisory and low-noise.
+    """
+    text = command_text.lower()
+    p = path.replace("\\", "/").lower()
+    if p in text:
+        return True
+    name = p.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0]
+    parent = p.rsplit("/", 1)[0] if "/" in p else ""
+    parent_last = parent.rsplit("/", 1)[-1] if parent else ""
+    candidates = [
+        c
+        for c in (
+            stem, parent, parent_last,
+            f"test_{stem}", f"{stem}_test", f"{stem}.test", f"{stem}.spec",
+        )
+        if c
+    ]
+    return any(c in text for c in candidates)
+
+
+_WARN_NO_TARGETED_EVIDENCE = EvidenceQualityWarning(
+    code="NO_TARGETED_EVIDENCE_FOR_CHANGED_SOURCE",
+    title="No obvious targeted evidence for changed source",
+    severity="advisory",
+    explanation=(
+        "Changed source files were found, but the settled commands do not "
+        "obviously target those files or nearby tests."
+    ),
+    hint=(
+        "Add a targeted regression test or command that names the changed file, "
+        "package, module, or related test."
+    ),
+)
+
+
+def evidence_coverage_warnings(
+    settled_claims: list[dict[str, Any]],
+    changed_files: list[str],
+) -> list[EvidenceQualityWarning]:
+    """Advisory: warn when settled evidence does not obviously target changed source.
+
+    Conservative and built only from existing data (changed files + settled
+    command text). Fires at most once, and only when source-like files changed,
+    at least one settled command exists, and no command obviously targets the
+    changed source. Never flags docs-only or test-only changes, or missing
+    evidence (handled by evidence-dark / unsettled logic).
+    """
+    changed_source = [f for f in changed_files if _is_source_file(f)]
+    if not changed_source:
+        return []
+    command_texts: list[str] = []
+    for claim in settled_claims:
+        for cmd in claim.get("settlement", {}).get("commands", []) or []:
+            argv = cmd.get("command") or []
+            if argv:
+                command_texts.append(" ".join(str(t) for t in argv))
+    if not command_texts:
+        return []
+    targeted = any(
+        _command_targets_file(text, f) for text in command_texts for f in changed_source
+    )
+    if targeted:
+        return []
+    return [_WARN_NO_TARGETED_EVIDENCE]
+
+
 # ── Opt-in evidence gate (policy enforcement, L-005) ──────────────────────
 # A pure policy function over already-computed X-Ray fields. It enforces an
 # explicit evidence policy; it never claims the code is correct or incorrect.
@@ -364,6 +451,7 @@ EVIDENCE_GATE_POLICIES = (
     "warnings",
     "evidence-quality-warnings",
     "test-integrity-warnings",
+    "evidence-coverage-warnings",
     "contradicted",
     "unsettled",
     "scope-drift",
@@ -401,6 +489,7 @@ def evaluate_evidence_gate(
     label = xray_result.get("verdict_label", "")
     eq = int(counts.get("evidence_quality_warnings", 0))
     ti = int(counts.get("test_integrity_warnings", 0))
+    coverage = int(counts.get("evidence_coverage_warnings", 0))
     contradicted = int(counts.get("contradicted", 0))
     unsettled = int(counts.get("unsettled", 0))
     scope_drift = int(counts.get("scope_drift", 0))
@@ -415,12 +504,17 @@ def evaluate_evidence_gate(
             reasons.append(f"evidence quality warnings present ({eq})")
         if ti:
             reasons.append(f"test integrity warnings present ({ti})")
+        if coverage:
+            reasons.append(f"evidence coverage warnings present ({coverage})")
     elif fail_on == "evidence-quality-warnings":
         if eq:
             reasons.append(f"evidence quality warnings present ({eq})")
     elif fail_on == "test-integrity-warnings":
         if ti:
             reasons.append(f"test integrity warnings present ({ti})")
+    elif fail_on == "evidence-coverage-warnings":
+        if coverage:
+            reasons.append(f"evidence coverage warnings present ({coverage})")
     elif fail_on == "contradicted":
         if contradicted:
             reasons.append(f"contradicted claims present ({contradicted})")
@@ -580,6 +674,7 @@ def generate_xray(
 
     eq_warnings = evidence_quality_warnings(settled_claims, changed_files)
     ti_warnings = detect_test_integrity_warnings(root, base=base, head=head)
+    coverage_warnings = evidence_coverage_warnings(settled_claims, changed_files)
 
     return {
         "schema_version": XRAY_SCHEMA_VERSION,
@@ -603,6 +698,7 @@ def generate_xray(
         "wrap_outcomes_count": wrap_outcomes_count,
         "evidence_quality_warnings": [w.to_dict() for w in eq_warnings],
         "test_integrity_warnings": [w.to_dict() for w in ti_warnings],
+        "evidence_coverage_warnings": [w.to_dict() for w in coverage_warnings],
         "counts": {
             "changed_files": len(changed_files),
             "claims": len(claims),
@@ -620,6 +716,7 @@ def generate_xray(
             "scope_drift": len(scope_drift),
             "evidence_quality_warnings": len(eq_warnings),
             "test_integrity_warnings": len(ti_warnings),
+            "evidence_coverage_warnings": len(coverage_warnings),
         },
         "caveat": CAVEAT,
     }
@@ -800,6 +897,19 @@ def render_markdown(xray: dict[str, Any]) -> str:
             lines.append(f"- **{w['title']}** — {w['explanation']} {w['hint']}")
         lines += [""]
 
+    # Evidence-coverage warnings — advisory, only shown when present.
+    coverage_warnings = xray.get("evidence_coverage_warnings", [])
+    if coverage_warnings:
+        lines += ["## Evidence Coverage Warnings", ""]
+        lines += [
+            "_Advisory review prompts: the settled evidence may not exercise the "
+            "changed source. They do not prove the code is wrong or correct._",
+            "",
+        ]
+        for w in coverage_warnings:
+            lines.append(f"- **{w['title']}** — {w['explanation']} {w['hint']}")
+        lines += [""]
+
     # Settled claims
     lines += ["## Settled Claims", ""]
     settled = [c for c in xray["settled_claims"] if c["status"] != STATUS_LOCKED]
@@ -947,6 +1057,9 @@ def render_pr_comment(xray: dict[str, Any]) -> str:
     integrity = int(counts.get("test_integrity_warnings", 0))
     if integrity:
         lines.append(f"- Test integrity warnings: {integrity}")
+    coverage = int(counts.get("evidence_coverage_warnings", 0))
+    if coverage:
+        lines.append(f"- Evidence coverage warnings: {coverage}")
     lines += ["", "Full receipt: `PR_EVIDENCE.md`"]
     return "\n".join(lines)
 
