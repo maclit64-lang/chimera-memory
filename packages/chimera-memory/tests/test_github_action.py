@@ -137,3 +137,25 @@ def test_readme_action_mention_is_honest() -> None:
         "the agent lied",
     ):
         assert forbidden not in text
+
+
+def test_action_wires_fail_on_into_gate() -> None:
+    """The Action passes its fail-on input into an xray --fail-on gate command."""
+    text = _ACTION.read_text()
+    assert "--fail-on" in text
+    assert "${{ inputs.fail-on }}" in text
+
+
+def test_action_gate_default_is_non_failing() -> None:
+    assert _action()["inputs"]["fail-on"]["default"] == "never"
+
+
+def test_action_gate_message_is_honest() -> None:
+    text = _ACTION.read_text().lower()
+    assert "evidence policy, not code correctness" in text
+
+
+def test_example_workflow_documents_optional_stricter_gate() -> None:
+    text = _EXAMPLE_WF.read_text()
+    assert "fail-on: never" in text  # advisory default shown
+    assert "fail-on: warnings" in text  # optional stricter policy shown
