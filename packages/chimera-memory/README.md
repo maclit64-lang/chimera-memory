@@ -23,7 +23,7 @@ Chimera Memory is in public alpha for developers using AI coding agents.
 It is a local-first CLI that records what an AI coding agent claimed before editing, runs your real checks, settles the result, and generates `PR_EVIDENCE.md` for review.
 
 ```bash
-pip install chimera-memory==0.26.5
+pip install chimera-memory==0.27.0
 chimera-memory demo
 ```
 
@@ -247,7 +247,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: maclit64-lang/chimera-memory@v0.26.5
+      - uses: maclit64-lang/chimera-memory@v0.27.0
         with:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.sha }}
@@ -256,10 +256,12 @@ jobs:
 
 Full workflow with fork notes: [docs/examples/github-actions/pr-evidence.yml](../../docs/examples/github-actions/pr-evidence.yml).
 
-> **Action availability:** `@v0.26.5` resolves once the `v0.26.5` release tag —
-> the first tag to include `action.yml` — is pushed to
-> `maclit64-lang/chimera-memory`. Until then, pin the launch branch or a commit
-> SHA for testing — e.g. `maclit64-lang/chimera-memory@oss/memory-launch`.
+> **Action availability:** `@v0.27.0` resolves once the `v0.27.0` release tag —
+> the stacked product RC — is pushed to `maclit64-lang/chimera-memory`. Until
+> then, pin the RC branch or a commit SHA for testing — e.g.
+> `maclit64-lang/chimera-memory@oss/memory-v0270-rc`. (v0.26.5 remains the
+> separate frozen launch-polish RC; an external release still depends on
+> resolving the PyPI publish.)
 
 **Optional: fail the PR on weak evidence.** The Action is advisory by default
 (`fail-on: never`). Set a stricter policy to fail CI when evidence is weak:

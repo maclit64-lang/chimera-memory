@@ -10,6 +10,13 @@ been pushed — no published Git ref yet contains `action.yml`. This file lists
 what must happen to close that gap and how to smoke-test it. Nothing here has
 been executed — it is a plan.
 
+> **Applies to the current RC.** This readiness process was first written for the
+> v0.26.5 launch-polish RC; it applies equally to the **v0.27.0 stacked product
+> RC** — substitute `v0.27.0` for `v0.26.5` throughout. On this RC branch
+> (`oss/memory-v0270-rc`) the README and example workflow reference `@v0.27.0`.
+> v0.26.5 remains the separate frozen launch-polish RC; both still depend on
+> resolving the operator-side PyPI publish.
+
 ## Verified current state
 
 | Item | State | Evidence |

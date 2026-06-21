@@ -32,11 +32,11 @@ jobs:
         with:
           fetch-depth: 0  # full history so the base..head diff is available
 
-      # Availability: this pinned `@v0.26.5` ref resolves only AFTER the v0.26.5
-      # release tag — the first tag to include this repo's action.yml — is pushed.
-      # For pre-release testing, pin the launch branch or a commit SHA, e.g.
-      #   uses: maclit64-lang/chimera-memory@oss/memory-launch
-      - uses: maclit64-lang/chimera-memory@v0.26.5
+      # Availability: this pinned `@v0.27.0` ref resolves only AFTER the v0.27.0
+      # release tag (the stacked product RC) is pushed.
+      # For pre-release testing, pin the RC branch or a commit SHA, e.g.
+      #   uses: maclit64-lang/chimera-memory@oss/memory-v0270-rc
+      - uses: maclit64-lang/chimera-memory@v0.27.0
         with:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.sha }}

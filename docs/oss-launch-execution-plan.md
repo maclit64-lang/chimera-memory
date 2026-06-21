@@ -112,6 +112,17 @@ source of truth.
   honest staleness cannot be proven without false positives. Advisory only —
   never says "untested", never asserts correctness. Separate worktree; release
   RC `c8e6526bf` unchanged.
+- **STACK-1 — Product stack consolidation audit (DONE).** Verified the linear
+  L-003→L-004→L-005→L-003B stack on the RC, combined-output rendering, gate
+  aggregation, anti-overclaim, and docs consistency. Report:
+  [`docs/stack1-product-consolidation-audit.md`](stack1-product-consolidation-audit.md).
+- **v0.27.0 RC prep (DONE, no publish).** Lockstep bump of `chimera-memory` +
+  `chimera-memory-types` 0.26.5 → 0.27.0 (dep bound `>=0.27.0,<1.0`, lockfile
+  updated); release note at [`docs/releases/v0.27.0.md`](releases/v0.27.0.md);
+  forward-looking Action/docs examples moved to `@v0.27.0`. **v0.26.5 remains the
+  frozen launch-polish RC** (`c8e6526bf`, untouched); **v0.27.0 is the stacked
+  product RC** that supersets it. Neither is published — both depend on resolving
+  the operator-side PyPI publish. Push/tag/publish prepared but **NOT run**.
 
 ## Out of scope (do not build yet)
 
