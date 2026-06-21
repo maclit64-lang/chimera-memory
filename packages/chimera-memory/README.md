@@ -210,6 +210,11 @@ evidence, zero tests collected, or a bug-fix claim with no regression test. Thes
 are review prompts: they flag weak or missing evidence and never prove the code
 is wrong or correct.
 
+**Test Integrity Warnings.** When a diff appears to weaken the tests — an added
+skip/xfail, a focus-only marker (`it.only`, `fdescribe`), or a deleted test file
+— the receipt adds an advisory `## Test Integrity Warnings` section. These are
+review prompts too: they do not prove the code is wrong or correct.
+
 ### Run it on every pull request (GitHub Action)
 
 Add Chimera Memory to a repository's pull-request workflow to post the receipt

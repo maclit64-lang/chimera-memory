@@ -38,6 +38,8 @@ from typing import Any
 from chimera_memory.adapters.git import (
     git_changed_files_between,
     git_changed_files_since,
+    git_deleted_files,
+    git_diff_added_lines,
     git_head_sha,
 )
 from chimera_memory.claim_lock import (
@@ -251,6 +253,106 @@ def evidence_quality_warnings(
     return [found[code] for code in sorted(found)]
 
 
+# ── Test Integrity Warnings (advisory, L-004) ─────────────────────────────
+# Flag diffs that appear to weaken the test suite (added skip/xfail, focus-only
+# markers, deleted test files). Built from the diff's added lines + deleted
+# files; never asserts the code is wrong or correct. Reuses EvidenceQualityWarning.
+
+_TEST_PATH_RE = re.compile(
+    r"(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.py$|\.(test|spec)\.[jt]sx?$",
+    re.IGNORECASE,
+)
+_SKIP_ADDED_RE = re.compile(
+    r"@pytest\.mark\.skip|pytest\.skip\(|@unittest\.skip|unittest\.skip\(|self\.skipTest\("
+)
+_XFAIL_ADDED_RE = re.compile(r"@pytest\.mark\.xfail|pytest\.xfail\(")
+_ONLY_ADDED_RE = re.compile(
+    r"\b(?:it|test|describe|context)\.only\s*\(|\bfit\s*\(|\bfdescribe\s*\("
+)
+
+
+def _is_test_file(path: str) -> bool:
+    """Conservative test-file identification (Python + JS/TS conventions)."""
+    return bool(_TEST_PATH_RE.search(path.replace("\\", "/")))
+
+
+# (code, regex, title, explanation-template, hint)
+_TEST_WEAKENING_SCANS: list[tuple[str, re.Pattern[str], str, str, str]] = [
+    (
+        "TEST_SKIP_ADDED",
+        _SKIP_ADDED_RE,
+        "Skip added",
+        "This diff adds a skipped test in `{path}`.",
+        "Review whether the skip is temporary, justified, and covered elsewhere.",
+    ),
+    (
+        "TEST_XFAIL_ADDED",
+        _XFAIL_ADDED_RE,
+        "XFail added",
+        "This diff marks a test as expected-to-fail (xfail) in `{path}`.",
+        "Review whether this hides a regression.",
+    ),
+    (
+        "ONLY_FOCUS_ADDED",
+        _ONLY_ADDED_RE,
+        "Focus-only marker added",
+        "This diff adds a focus-only test marker in `{path}`, which can disable "
+        "the other tests in that file.",
+        "Review whether the focus-only marker was left in by accident.",
+    ),
+]
+
+
+def detect_test_integrity_warnings(
+    root: Path,
+    *,
+    base: str | None = None,
+    head: str | None = None,
+) -> list[EvidenceQualityWarning]:
+    """Detect advisory test-integrity warnings from the diff.
+
+    Scans only *added* lines of changed test files for skip/xfail/focus-only
+    markers and flags deleted test files. Removed markers and non-test files are
+    never flagged. De-duplicated per (code, file).
+    """
+    warnings: list[EvidenceQualityWarning] = []
+    seen: set[tuple[str, str]] = set()
+
+    added = git_diff_added_lines(root, base=base, head=head)
+    for path in sorted(added):
+        if not _is_test_file(path):
+            continue
+        blob = "\n".join(added[path])
+        for code, regex, title, explanation, hint in _TEST_WEAKENING_SCANS:
+            if (code, path) in seen or not regex.search(blob):
+                continue
+            warnings.append(
+                EvidenceQualityWarning(
+                    code=code,
+                    title=title,
+                    severity="advisory",
+                    explanation=explanation.format(path=path),
+                    hint=hint,
+                )
+            )
+            seen.add((code, path))
+
+    for path in git_deleted_files(root, base=base, head=head):
+        if _is_test_file(path) and ("TEST_FILE_DELETED", path) not in seen:
+            warnings.append(
+                EvidenceQualityWarning(
+                    code="TEST_FILE_DELETED",
+                    title="Test file deleted",
+                    severity="advisory",
+                    explanation=f"This diff deletes the test file `{path}`.",
+                    hint="Confirm the tests moved or are obsolete, not silently dropped.",
+                )
+            )
+            seen.add(("TEST_FILE_DELETED", path))
+
+    return warnings
+
+
 def generate_xray(
     store: MemoryStore,
     *,
@@ -393,6 +495,7 @@ def generate_xray(
     )
 
     eq_warnings = evidence_quality_warnings(settled_claims, changed_files)
+    ti_warnings = detect_test_integrity_warnings(root, base=base, head=head)
 
     return {
         "schema_version": XRAY_SCHEMA_VERSION,
@@ -415,6 +518,7 @@ def generate_xray(
         "reviewer_focus": reviewer_focus,
         "wrap_outcomes_count": wrap_outcomes_count,
         "evidence_quality_warnings": [w.to_dict() for w in eq_warnings],
+        "test_integrity_warnings": [w.to_dict() for w in ti_warnings],
         "counts": {
             "changed_files": len(changed_files),
             "claims": len(claims),
@@ -431,6 +535,7 @@ def generate_xray(
             ),
             "scope_drift": len(scope_drift),
             "evidence_quality_warnings": len(eq_warnings),
+            "test_integrity_warnings": len(ti_warnings),
         },
         "caveat": CAVEAT,
     }
@@ -598,6 +703,19 @@ def render_markdown(xray: dict[str, Any]) -> str:
             lines.append(f"- **{w['title']}** — {w['explanation']} {w['hint']}")
         lines += [""]
 
+    # Test-integrity warnings — advisory, only shown when present.
+    ti_warnings = xray.get("test_integrity_warnings", [])
+    if ti_warnings:
+        lines += ["## Test Integrity Warnings", ""]
+        lines += [
+            "_Advisory review prompts: this diff may have weakened the tests. "
+            "They do not prove the code is wrong or correct._",
+            "",
+        ]
+        for w in ti_warnings:
+            lines.append(f"- **{w['title']}** — {w['explanation']} {w['hint']}")
+        lines += [""]
+
     # Settled claims
     lines += ["## Settled Claims", ""]
     settled = [c for c in xray["settled_claims"] if c["status"] != STATUS_LOCKED]
@@ -742,6 +860,9 @@ def render_pr_comment(xray: dict[str, Any]) -> str:
     ]
     if warnings:
         lines.append(f"- Evidence quality warnings: {warnings}")
+    integrity = int(counts.get("test_integrity_warnings", 0))
+    if integrity:
+        lines.append(f"- Test integrity warnings: {integrity}")
     lines += ["", "Full receipt: `PR_EVIDENCE.md`"]
     return "\n".join(lines)
 

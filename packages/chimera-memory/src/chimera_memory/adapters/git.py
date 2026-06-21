@@ -196,3 +196,76 @@ def git_available(root: Path | str | None = None) -> bool:
     """Return True if git is usable in ``root``."""
     repo = Path(root) if root is not None else Path.cwd()
     return _run_git(repo, "rev-parse", "HEAD").ok
+
+
+def _parse_added_lines(diff_text: str) -> dict[str, list[str]]:
+    """Parse a unified diff into ``{path: [added lines without leading '+']}``."""
+    added: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+            current = None if path == "/dev/null" else path
+        elif current and line.startswith("+") and not line.startswith("+++"):
+            added.setdefault(current, []).append(line[1:])
+    return added
+
+
+def git_diff_added_lines(
+    root: Path | str | None = None,
+    *,
+    base: str | None = None,
+    head: str | None = None,
+) -> dict[str, list[str]]:
+    """Return added lines per file for the diff (leading ``+`` stripped).
+
+    ``base`` given => commit-range mode (``base``..``head``); otherwise
+    working-tree mode (vs ``HEAD``), where untracked files contribute their full
+    content as added lines. Read-only; returns an empty dict if git is
+    unavailable.
+    """
+    repo = Path(root) if root is not None else Path.cwd()
+    if base is not None:
+        result = _run_git(repo, "diff", "--unified=0", base, head or "HEAD")
+    else:
+        result = _run_git(repo, "diff", "--unified=0", "HEAD")
+    added = _parse_added_lines(result.stdout) if result.ok else {}
+    if base is None:
+        others = _run_git(repo, "ls-files", "--others", "--exclude-standard")
+        if others.ok:
+            for path in others.stdout.splitlines():
+                path = path.strip()
+                if not path:
+                    continue
+                try:
+                    text = (repo / path).read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                lines = text.splitlines()
+                if lines:
+                    added.setdefault(path, []).extend(lines)
+    return added
+
+
+def git_deleted_files(
+    root: Path | str | None = None,
+    *,
+    base: str | None = None,
+    head: str | None = None,
+) -> list[str]:
+    """Return paths deleted in the diff (``git diff --diff-filter=D``).
+
+    ``base`` given => commit-range mode (``base``..``head``); otherwise
+    working-tree deletions vs ``HEAD``. Read-only; returns an empty list if git
+    is unavailable.
+    """
+    repo = Path(root) if root is not None else Path.cwd()
+    if base is not None:
+        result = _run_git(repo, "diff", "--diff-filter=D", "--name-only", base, head or "HEAD")
+    else:
+        result = _run_git(repo, "diff", "--diff-filter=D", "--name-only", "HEAD")
+    if not result.ok:
+        return []
+    return sorted({p.strip() for p in result.stdout.splitlines() if p.strip()})

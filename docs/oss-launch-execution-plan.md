@@ -83,8 +83,16 @@ source of truth.
   present) and a compact count line in the PR comment. Advisory only — they flag
   weak/missing evidence, never correctness. Built on a separate worktree; the
   release RC `c8e6526bf` is unchanged.
-- **L-004 — Test-Weakening / Test Integrity Detector.** Next product ticket
-  (not started).
+- **L-004 — Test Integrity Detector (DONE).** Advisory test-integrity warnings
+  derived from the diff (added lines + deleted files), independent of claim
+  locks: `TEST_SKIP_ADDED`, `TEST_XFAIL_ADDED`, `ONLY_FOCUS_ADDED`,
+  `TEST_FILE_DELETED`. Rendered as a `## Test Integrity Warnings` section in
+  `PR_EVIDENCE.md` (only when present) and a compact count in the PR comment.
+  Added small read-only git diff helpers (added lines + deleted files); no
+  schema rewrite. Advisory only — they flag possible test weakening, never
+  correctness. Built on a separate worktree; release RC `c8e6526bf` unchanged.
+- **L-005 / L-003B — Later product tickets** (opt-in CI evidence gate;
+  stale-evidence / changed-files-not-exercised). Not started.
 
 ## Out of scope (do not build yet)
 
