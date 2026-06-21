@@ -30,6 +30,7 @@ artefacts as evidence-dark entries.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,155 @@ def classify_evidence_dark(files: list[str]) -> dict[str, list[str]]:
     for f in files:
         (cache if _is_likely_cache(f) else source).append(f)
     return {"source_files": source, "likely_cache_or_build": cache}
+
+
+# ── Evidence Quality Warnings (advisory, L-003) ───────────────────────────
+# Review prompts derived only from already-stored settlement evidence (command
+# text, role, outcome, stdout excerpt). They explain why evidence is weak; they
+# never claim the code is correct, safe, or wrong.
+
+
+@dataclass(frozen=True)
+class EvidenceQualityWarning:
+    code: str
+    title: str
+    severity: str
+    explanation: str
+    hint: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "title": self.title,
+            "severity": self.severity,
+            "explanation": self.explanation,
+            "hint": self.hint,
+        }
+
+
+# Wrapper tokens are skipped so `uv run pytest` / `python -m pytest` classify
+# the same as `pytest`.
+_TEST_TOOLS = frozenset(
+    {"pytest", "py.test", "unittest", "tox", "nox", "jest", "vitest", "mocha", "phpunit"}
+)
+_LINT_TOOLS = frozenset(
+    {
+        "ruff", "black", "isort", "flake8", "pylint", "mypy", "pyright",
+        "eslint", "prettier", "gofmt", "golint", "clippy", "rustfmt",
+    }
+)
+_SUBCOMMAND_TEST_DRIVERS = frozenset({"go", "cargo", "npm", "pnpm", "yarn", "dotnet"})
+_ZERO_TESTS_RE = re.compile(
+    r"collected\s+0\s+items|no\s+tests\s+ran|0\s+selected|0\s+tests\s+ran",
+    re.IGNORECASE,
+)
+_BUGFIX_RE = re.compile(
+    r"\b(fix|fixes|fixed|bug|bugfix|regression|crash|null|npe|segfault|"
+    r"hotfix|patch|broken|defect|error|exception)\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_command(cmd: list[str]) -> str:
+    """Classify a command as 'test', 'lint', or 'other' by its effective tool.
+
+    Wrapper prefixes (uv/run/poetry/python/-m/...) are ignored. Returns the
+    strongest signal: 'test' beats 'lint' beats 'other'.
+    """
+    tokens = [t for t in cmd if t]
+    saw_test = False
+    saw_lint = False
+    for i, tok in enumerate(tokens):
+        base = tok.rsplit("/", 1)[-1]
+        if base in _TEST_TOOLS:
+            saw_test = True
+        elif base in _LINT_TOOLS:
+            saw_lint = True
+        elif base in _SUBCOMMAND_TEST_DRIVERS:
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if nxt in {"test", "t"}:
+                saw_test = True
+    if saw_test:
+        return "test"
+    if saw_lint:
+        return "lint"
+    return "other"
+
+
+def _command_shows_zero_tests(stdout: str | None) -> bool:
+    """True when a command's recorded stdout indicates zero tests were collected."""
+    if not stdout:
+        return False
+    return bool(_ZERO_TESTS_RE.search(stdout))
+
+
+_WARN_LINT_ONLY = EvidenceQualityWarning(
+    code="LINT_ONLY_EVIDENCE",
+    title="Lint-only evidence",
+    severity="advisory",
+    explanation=(
+        "Source files changed within a covered scope, but the recorded evidence "
+        "only ran lint/static checks — no behavioral test was settled."
+    ),
+    hint="Add a targeted test or regression check that exercises the change.",
+)
+_WARN_ZERO_TESTS = EvidenceQualityWarning(
+    code="ZERO_TESTS_COLLECTED",
+    title="Zero tests collected",
+    severity="advisory",
+    explanation=(
+        "A settled test command ran but its output shows zero tests were "
+        "collected, so it exercised nothing."
+    ),
+    hint="Fix the test path/selector so the intended tests are collected and run.",
+)
+_WARN_GREEN_ONLY = EvidenceQualityWarning(
+    code="GREEN_ONLY_EVIDENCE",
+    title="Green-only evidence (no regression)",
+    severity="advisory",
+    explanation=(
+        "The claim reads like a bug fix and all checks passed, but no targeted "
+        "test exercised the original failure (no failing-before / passing-after "
+        "signal)."
+    ),
+    hint="Add a regression test that fails before the fix and passes after.",
+)
+
+
+def evidence_quality_warnings(
+    settled_claims: list[dict[str, Any]],
+    changed_files: list[str],
+) -> list[EvidenceQualityWarning]:
+    """Derive advisory evidence-quality warnings from settled-claim command evidence.
+
+    Built only from already-stored fields (command text, role, outcome, stdout
+    excerpt) plus the change set. Adds no new scoring and never asserts
+    correctness. Warnings are de-duplicated per code (aggregate view).
+    """
+    found: dict[str, EvidenceQualityWarning] = {}
+    for claim in settled_claims:
+        commands = claim.get("settlement", {}).get("commands", []) or []
+        if not commands:
+            continue
+        scope = claim.get("scope_path", ".")
+        in_scope_changed = [f for f in changed_files if file_under_scope(f, scope)]
+        intent = claim.get("intent", "") or ""
+
+        falsifiers = [c for c in commands if c.get("role") == "falsifier"]
+        classes = [_classify_command(c.get("command", []) or []) for c in falsifiers]
+        has_test = "test" in classes
+        all_lint = bool(classes) and all(k == "lint" for k in classes)
+        all_pass = all(c.get("outcome") == "PASS" for c in commands)
+        bugfix = bool(_BUGFIX_RE.search(intent))
+
+        if any(_command_shows_zero_tests(c.get("stdout_excerpt")) for c in commands):
+            found.setdefault("ZERO_TESTS_COLLECTED", _WARN_ZERO_TESTS)
+        if in_scope_changed and all_lint:
+            found.setdefault("LINT_ONLY_EVIDENCE", _WARN_LINT_ONLY)
+        elif in_scope_changed and bugfix and not has_test and all_pass:
+            found.setdefault("GREEN_ONLY_EVIDENCE", _WARN_GREEN_ONLY)
+
+    return [found[code] for code in sorted(found)]
 
 
 def generate_xray(
@@ -242,6 +392,8 @@ def generate_xray(
         covered_files=sorted(covered_files),
     )
 
+    eq_warnings = evidence_quality_warnings(settled_claims, changed_files)
+
     return {
         "schema_version": XRAY_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -262,6 +414,7 @@ def generate_xray(
         "scope_drift_files": scope_drift,
         "reviewer_focus": reviewer_focus,
         "wrap_outcomes_count": wrap_outcomes_count,
+        "evidence_quality_warnings": [w.to_dict() for w in eq_warnings],
         "counts": {
             "changed_files": len(changed_files),
             "claims": len(claims),
@@ -277,6 +430,7 @@ def generate_xray(
                 evidence_dark_classified["likely_cache_or_build"]
             ),
             "scope_drift": len(scope_drift),
+            "evidence_quality_warnings": len(eq_warnings),
         },
         "caveat": CAVEAT,
     }
@@ -430,6 +584,20 @@ def render_markdown(xray: dict[str, Any]) -> str:
         "",
     ]
 
+    # Evidence-quality warnings — advisory, only shown when present.
+    eq_warnings = xray.get("evidence_quality_warnings", [])
+    if eq_warnings:
+        lines += ["## Evidence Quality Warnings", ""]
+        lines += [
+            "_Advisory review prompts derived from the recorded evidence. They "
+            "flag weak or missing evidence; they do not prove the code is wrong "
+            "or correct._",
+            "",
+        ]
+        for w in eq_warnings:
+            lines.append(f"- **{w['title']}** — {w['explanation']} {w['hint']}")
+        lines += [""]
+
     # Settled claims
     lines += ["## Settled Claims", ""]
     settled = [c for c in xray["settled_claims"] if c["status"] != STATUS_LOCKED]
@@ -559,22 +727,23 @@ def render_pr_comment(xray: dict[str, Any]) -> str:
     evidence_dark = int(counts.get("evidence_dark_source", counts.get("evidence_dark", 0)))
     contradicted = int(counts.get("contradicted", 0))
     unsettled = int(counts.get("unsettled", 0))
-    return "\n".join(
-        [
-            "## Chimera Memory Evidence Receipt",
-            "",
-            f"**Verdict:** {label}",
-            "",
-            "This scores evidence quality, not code correctness.",
-            "",
-            f"- Scope drift: {_present_absent(scope_drift)}",
-            f"- Evidence-dark changes: {_present_absent(evidence_dark)}",
-            f"- Contradicted claims: {contradicted}",
-            f"- Unsettled claims: {unsettled}",
-            "",
-            "Full receipt: `PR_EVIDENCE.md`",
-        ]
-    )
+    warnings = int(counts.get("evidence_quality_warnings", 0))
+    lines = [
+        "## Chimera Memory Evidence Receipt",
+        "",
+        f"**Verdict:** {label}",
+        "",
+        "This scores evidence quality, not code correctness.",
+        "",
+        f"- Scope drift: {_present_absent(scope_drift)}",
+        f"- Evidence-dark changes: {_present_absent(evidence_dark)}",
+        f"- Contradicted claims: {contradicted}",
+        f"- Unsettled claims: {unsettled}",
+    ]
+    if warnings:
+        lines.append(f"- Evidence quality warnings: {warnings}")
+    lines += ["", "Full receipt: `PR_EVIDENCE.md`"]
+    return "\n".join(lines)
 
 
 def _render_claim_block(claim: dict[str, Any]) -> list[str]:

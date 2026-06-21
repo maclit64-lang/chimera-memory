@@ -204,6 +204,12 @@ evidence-dark changes, scope drift, and a reviewer-focus list. It reports
 correct. See [docs/examples/claim-locked-coding.md](../../docs/examples/claim-locked-coding.md)
 and [docs/examples/pr-evidence-example.md](../../docs/examples/pr-evidence-example.md).
 
+**Evidence Quality Warnings.** When the settled evidence looks weak, the receipt
+adds an advisory `## Evidence Quality Warnings` section — for example lint-only
+evidence, zero tests collected, or a bug-fix claim with no regression test. These
+are review prompts: they flag weak or missing evidence and never prove the code
+is wrong or correct.
+
 ### Run it on every pull request (GitHub Action)
 
 Add Chimera Memory to a repository's pull-request workflow to post the receipt

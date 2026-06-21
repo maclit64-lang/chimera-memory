@@ -75,8 +75,16 @@ source of truth.
   reference `@v0.26.5`. `v0.26.4` left untouched (it maps to the shipped PyPI
   build). Push/tag/publish commands are prepared but **NOT run** — awaiting
   founder authorization (Path A).
-- **L-003 / L-004 — Later polish.** Verdict-vocabulary refinement, scope-drift
-  severity classification, and other sharp-edge items as scoped.
+- **L-003 — Evidence Quality Enrichment (DONE).** Advisory evidence-quality
+  warnings derived only from settled-claim command evidence (command text,
+  role, outcome, stdout excerpt) — no new scoring, no schema rewrite:
+  `LINT_ONLY_EVIDENCE`, `ZERO_TESTS_COLLECTED`, `GREEN_ONLY_EVIDENCE`. Rendered
+  as a `## Evidence Quality Warnings` section in `PR_EVIDENCE.md` (only when
+  present) and a compact count line in the PR comment. Advisory only — they flag
+  weak/missing evidence, never correctness. Built on a separate worktree; the
+  release RC `c8e6526bf` is unchanged.
+- **L-004 — Test-Weakening / Test Integrity Detector.** Next product ticket
+  (not started).
 
 ## Out of scope (do not build yet)
 
