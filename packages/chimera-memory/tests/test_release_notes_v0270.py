@@ -53,6 +53,8 @@ def test_release_notes_gate_aggregate_is_current() -> None:
     t = _NOTES.read_text()
     # `warnings` covers all four families incl. local relapse (true + CLI-usable).
     assert "aggregates all four warning families" in t
+    # CLI now exposes the per-family policy; notes must list it (11 policies, synced).
+    assert "local-relapse-warnings" in t
 
 
 def test_release_notes_no_affirmative_overclaim() -> None:

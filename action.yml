@@ -30,7 +30,8 @@ inputs:
       Opt-in evidence gate policy. Default 'never' (advisory only — the job never
       fails). Other values fail the job at the end when the policy is not met:
       review-required, warnings, evidence-quality-warnings,
-      test-integrity-warnings, contradicted, unsettled, scope-drift,
+      test-integrity-warnings, evidence-coverage-warnings,
+      local-relapse-warnings, contradicted, unsettled, scope-drift,
       evidence-dark. Enforces evidence policy, not code correctness.
     required: false
     default: "never"
