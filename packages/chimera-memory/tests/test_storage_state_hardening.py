@@ -234,20 +234,60 @@ def test_valid_state_not_rebuilt_on_match(
 
 @pytest.mark.slow
 def test_append_1000_claims_within_time_budget(tmp_path: Path) -> None:
-    """1000 appends with state validation must stay well under 10 seconds.
+    """1000 appends must stay ~O(1) per append (no O(N^2) regression).
 
-    This is a performance benchmark, not a correctness test.
-    Marked slow because wall-clock timing is load-sensitive.
-    Run explicitly with: pytest -m slow
+    Load-tolerant regression guard, not a benchmark. Instead of a brittle absolute
+    wall-clock budget (which flakes on loaded CI/local hosts), it compares the
+    per-append cost of a late window against an early window in the same run:
+
+      * append is O(1) (CHM-3 ``append_state`` cache) -> the ratio stays ~1
+        regardless of how fast or loaded the host is, because both windows scale
+        together under the same load;
+      * an O(N)-per-append regression (e.g. a broken append cache that re-reads the
+        whole ledger) makes late appends scale with N and trips the ratio
+        (~16x for these windows).
+
+    A very loose absolute ceiling is kept only as a sanity guard against a hang.
     """
     t0 = datetime(2026, 1, 1, 12, tzinfo=UTC)
     ev = _ev(t0)
-    start = time.perf_counter()
-    for i in range(1000):
+
+    def _append(i: int) -> None:
         record_claim(
             title=f"t{i}", summary="s", predicted=True,
             evidence=[ev], root=tmp_path, claim_time=t0,
             agent_id="a", task_type="test",
         )
-    elapsed = time.perf_counter() - start
-    assert elapsed < 10.0, f"1000 appends took {elapsed:.2f}s — expected < 10s"
+
+    total, warmup, window = 1000, 10, 100
+
+    overall_start = time.perf_counter()
+    for i in range(warmup):  # discard cold-start (imports, first file writes)
+        _append(i)
+
+    t = time.perf_counter()
+    for i in range(warmup, warmup + window):
+        _append(i)
+    early_per = (time.perf_counter() - t) / window
+
+    for i in range(warmup + window, total - window):
+        _append(i)
+
+    t = time.perf_counter()
+    for i in range(total - window, total):
+        _append(i)
+    late_per = (time.perf_counter() - t) / window
+
+    overall_elapsed = time.perf_counter() - overall_start
+    ratio = late_per / max(early_per, 1e-4)
+
+    # Primary, load-immune guard: per-append cost must not scale with N.
+    assert ratio < 8.0, (
+        f"per-append cost grew {ratio:.1f}x across {total} appends "
+        f"(early {early_per * 1e3:.3f} ms/append -> late {late_per * 1e3:.3f} ms/append) "
+        "— possible non-O(1)/O(N^2) append regression"
+    )
+    # Loose sanity ceiling only: catches a total hang, not normal host load.
+    assert overall_elapsed < 60.0, (
+        f"{total} appends took {overall_elapsed:.1f}s (loose hang ceiling, not a benchmark)"
+    )
