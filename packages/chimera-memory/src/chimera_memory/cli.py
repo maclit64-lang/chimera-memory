@@ -563,6 +563,20 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     status_parser.set_defaults(command="status")
 
+    proof_debt_parser = subparsers.add_parser(
+        "proof-debt",
+        help="Summarize local claims/receipts that still need stronger evidence.",
+        description=(
+            "Lists local claims and receipts that still need stronger evidence: "
+            "unsettled/contradicted claims, review-required receipts, and evidence "
+            "quality / test-integrity / evidence-coverage warnings. Advisory and "
+            "local-only — it scores evidence quality, not code correctness."
+        ),
+    )
+    proof_debt_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    proof_debt_parser.add_argument("--memory-dir")
+    proof_debt_parser.set_defaults(command="proof-debt")
+
     failures_parser = subparsers.add_parser(
         "failures",
         help="List CONTRADICTED claims with failure witnesses.",
@@ -1360,6 +1374,8 @@ def main(argv: list[str] | None = None) -> int:
         return _wrap_pytest(parsed)
     if parsed.command == "status":
         return _status(parsed)
+    if parsed.command == "proof-debt":
+        return _proof_debt(parsed)
     if parsed.command == "failures":
         return _failures(parsed)
     if parsed.command == "verify":
@@ -3667,6 +3683,34 @@ def _apply_evidence_gate(result: dict, fail_on: str) -> int:
     for reason in gate.reasons:
         print(f"  - {reason}", file=_sys.stderr)
     return 2
+
+
+def _proof_debt(parsed: argparse.Namespace) -> int:
+    """Handle proof-debt: summarize local evidence debt from the X-Ray result.
+
+    Local-only and read-only. Built from existing X-Ray fields; adds no new
+    detection and changes no verdict semantics.
+    """
+    from chimera_memory.proof_debt import compute_proof_debt, render_proof_debt_text
+    from chimera_memory.xray import generate_xray
+
+    root = Path.cwd()
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=root)
+    )
+    if not store.memory_dir.exists():
+        store.initialize()
+
+    result = generate_xray(store, root=root)
+    debt = compute_proof_debt(result)
+    if getattr(parsed, "json", False):
+        print(json.dumps(debt, indent=2, sort_keys=True))
+    else:
+        print(render_proof_debt_text(debt))
+    return 0
 
 
 def _xray(parsed: argparse.Namespace) -> int:
