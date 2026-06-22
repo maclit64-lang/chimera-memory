@@ -58,6 +58,7 @@ chimera-memory xray generate --base main --head HEAD --output PR_EVIDENCE.md
 | Evidence Quality | The recorded commands may be weak — lint-only, zero tests collected, or green-only with no regression test. |
 | Test Integrity | The diff may weaken tests — added skips/xfails, focus-only tests, or a deleted test file. |
 | Evidence Coverage | Changed source exists, but no settled command obviously targets it or nearby tests. |
+| Local Relapse | A current claim resembles a previously contradicted local claim in the same ledger (overlapping scope plus matching intent or command fingerprint). |
 
 Warnings are review prompts. They do not prove the code is wrong or correct.
 
@@ -311,6 +312,14 @@ don't obviously target them or nearby tests, the receipt adds an advisory
 `## Evidence Coverage Warnings` section ("no obvious targeted evidence for changed
 source"). Like the others, these are review prompts — they do not prove the code
 is wrong or correct.
+
+**Local Relapse Warnings.** When a current claim resembles a previously
+contradicted local claim in the same Chimera Memory ledger — overlapping scope
+plus the same intent or a shared specific command fingerprint — the receipt adds
+an advisory `## Local Relapse Warnings` section naming the prior claim. Local
+Relapse Warnings compare the current receipt against previously contradicted
+claims in the same local Chimera Memory ledger. They are review prompts, not
+proof that a bug returned, and never claim recurrence, correctness, or safety.
 
 ### Run it on every pull request (GitHub Action)
 

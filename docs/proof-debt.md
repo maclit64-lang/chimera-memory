@@ -28,6 +28,7 @@ Debt is summarized from already-recorded signals only:
 | `CONTRADICTED_CLAIM` | A claim whose latest settlement contradicted it. |
 | `UNSETTLED_CLAIM` | A claim with no settled falsifier outcome. |
 | `REVIEW_REQUIRED_RECEIPT` | The current receipt verdict is `REVIEW REQUIRED`. |
+| `LOCAL_RELAPSE_WARNING` | A current claim resembles a previously contradicted local claim (overlapping scope + matching intent or command fingerprint). |
 | `TEST_INTEGRITY_WARNING` | The diff may have weakened tests (skip/xfail/focus-only/deleted). |
 | `EVIDENCE_COVERAGE_WARNING` | Changed source has no obviously targeted evidence. |
 | `EVIDENCE_QUALITY_WARNING` | Evidence is lint-only, zero-test, or green-only. |
@@ -35,8 +36,8 @@ Debt is summarized from already-recorded signals only:
 | `SCOPE_DRIFT` | Settled changes fell outside the declared scope. |
 
 Items are ordered deterministically by severity (contradicted → unsettled →
-review-required → test-integrity → evidence-coverage → evidence-quality →
-evidence-dark → scope-drift), then by reference.
+review-required → local-relapse → test-integrity → evidence-coverage →
+evidence-quality → evidence-dark → scope-drift), then by reference.
 
 ## Honesty
 
