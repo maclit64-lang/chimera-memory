@@ -94,6 +94,19 @@ time (best-effort, not exhaustive). See
 captured, what is not, and what the tool does not prove — and review receipts
 before sharing them publicly.
 
+## Proof debt
+
+`chimera-memory proof-debt` lists local claims and receipts that still need
+stronger evidence — unsettled/contradicted claims, review-required receipts, and
+evidence quality / test-integrity / evidence-coverage warnings. Advisory and
+local-only; it does not prove code is correct or incorrect. See
+[docs/proof-debt.md](../../docs/proof-debt.md).
+
+```bash
+chimera-memory proof-debt          # text summary
+chimera-memory proof-debt --json   # machine-readable
+```
+
 ## Public alpha
 
 Chimera Memory is in public alpha for developers using AI coding agents.
