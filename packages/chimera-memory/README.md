@@ -85,6 +85,15 @@ Enable a stricter `fail-on` once your team agrees on a policy.
 **Does it send my code to a cloud service?** No. Everything stays on your machine
 — no cloud, no sync, no account.
 
+## Trust and redaction
+
+Chimera Memory is local-first and generates receipts from local git/command
+evidence. Witness excerpts are redacted for common secret patterns at capture
+time (best-effort, not exhaustive). See
+[docs/trust-and-redaction.md](../../docs/trust-and-redaction.md) for what is
+captured, what is not, and what the tool does not prove — and review receipts
+before sharing them publicly.
+
 ## Public alpha
 
 Chimera Memory is in public alpha for developers using AI coding agents.
