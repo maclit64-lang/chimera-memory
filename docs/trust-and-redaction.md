@@ -20,9 +20,10 @@ The Merge X-Ray receipt (`chimera-memory xray generate`, Markdown or `--json`)
 contains: the verdict and verdict label, settled claims (intent, declared scope,
 the pre-committed command text), evidence-dark and scope-drift file lists, a
 reviewer-focus list, the advisory warning sections (Evidence Quality, Test
-Integrity, Evidence Coverage), counts, and the "what this does not prove"
-caveat. The receipt does **not** print raw stdout/stderr; it only inspects stored
-excerpts internally (e.g. to detect that a test command collected zero tests).
+Integrity, Evidence Coverage, Local Relapse), counts, and the "what this does not
+prove" caveat. The receipt does **not** print raw stdout/stderr; it only inspects
+stored excerpts internally (e.g. to detect that a test command collected zero
+tests).
 
 ## 3. Is code sent to a cloud service?
 
@@ -66,7 +67,8 @@ stored unredacted in your local ledger.
 
 It does not prove the code is correct, secure, or complete, and it does not
 certify, approve, or guarantee anything. Warnings (evidence quality, test
-integrity, evidence coverage) are **review prompts**, not verdicts on the code.
+integrity, evidence coverage, local relapse) are **review prompts**, not verdicts
+on the code.
 
 ## 8. Reviewing receipts before sharing
 
