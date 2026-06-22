@@ -6,13 +6,14 @@ code is correct or incorrect.
 """
 from __future__ import annotations
 
+import argparse
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from chimera_memory.cli import main
-from chimera_memory.xray import EvidenceGateResult, evaluate_evidence_gate
+from chimera_memory.cli import _build_parser, main
+from chimera_memory.xray import EVIDENCE_GATE_POLICIES, EvidenceGateResult, evaluate_evidence_gate
 
 _FORBIDDEN = (
     "code is wrong",
@@ -165,3 +166,43 @@ def test_cli_invalid_fail_on_rejected(repo: Path, capsys) -> None:
     assert rc != 0
     err = capsys.readouterr().err
     assert "invalid choice" in err and "--fail-on" in err
+
+
+# ── BIGREL-4A: CLI --fail-on choices stay in sync with EVIDENCE_GATE_POLICIES ──
+
+
+def _fail_on_action() -> argparse.Action:
+    """Locate the `xray generate --fail-on` action in the built parser."""
+    parser = _build_parser()
+    top_sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    xray_parser = top_sub.choices["xray"]
+    xray_sub = next(a for a in xray_parser._actions if isinstance(a, argparse._SubParsersAction))
+    generate_parser = xray_sub.choices["generate"]
+    return next(a for a in generate_parser._actions if a.dest == "xray_fail_on")
+
+
+def test_cli_fail_on_choices_match_gate_policies() -> None:
+    """Regression guard: CLI choices must equal the gate's source of truth."""
+    choices = _fail_on_action().choices
+    assert set(choices) == set(EVIDENCE_GATE_POLICIES)
+    # local-relapse-warnings specifically must be present (the BIGREL-4 gap).
+    assert "local-relapse-warnings" in choices
+
+
+def test_cli_accepts_local_relapse_warnings_policy() -> None:
+    parsed = _build_parser().parse_args(
+        ["xray", "generate", "--fail-on", "local-relapse-warnings"]
+    )
+    assert parsed.xray_fail_on == "local-relapse-warnings"
+
+
+def test_cli_help_lists_local_relapse_warnings(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["xray", "generate", "--help"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "local-relapse-warnings" in out
+
+
+def test_cli_invalid_fail_on_policy_rejected() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["xray", "generate", "--fail-on", "not-a-policy"])

@@ -1205,13 +1205,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "writes the full Markdown report regardless of --format."
         ),
     )
+    # Gate policy choices come from the single source of truth in xray, so the
+    # CLI can never drift from EVIDENCE_GATE_POLICIES (BIGREL-4A).
+    from chimera_memory.xray import EVIDENCE_GATE_POLICIES
+
     xray_generate.add_argument(
         "--fail-on", dest="xray_fail_on",
-        choices=[
-            "never", "review-required", "warnings", "evidence-quality-warnings",
-            "test-integrity-warnings", "evidence-coverage-warnings", "contradicted",
-            "unsettled", "scope-drift", "evidence-dark",
-        ],
+        choices=list(EVIDENCE_GATE_POLICIES),
         default="never",
         help=(
             "Opt-in evidence gate: exit nonzero when the policy is not met. "
