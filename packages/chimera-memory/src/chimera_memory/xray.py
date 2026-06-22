@@ -442,6 +442,179 @@ def evidence_coverage_warnings(
 
 
 # ── Opt-in evidence gate (policy enforcement, L-005) ──────────────────────
+# ── Local Relapse Warnings (advisory, BIGREL-3) ───────────────────────────
+# A conservative, local-only review prompt: it flags when a current claim
+# resembles a previously CONTRADICTED local claim (overlapping scope plus the
+# same normalized intent or a shared specific command fingerprint). It uses only
+# already-stored ledger fields — no cross-repo data, no prediction, no
+# embeddings — and never claims recurrence, correctness, safety, or blame.
+
+# Wrapper/driver tokens stripped when fingerprinting a command, so
+# `uv run pytest X` and `pytest X` fingerprint the same.
+_CMD_WRAPPERS = frozenset(
+    {"uv", "run", "poetry", "python", "python3", "py", "-m", "npx", "pnpm",
+     "yarn", "npm", "exec", "--", "pdm", "hatch", "rye"}
+)
+
+
+@dataclass(frozen=True)
+class LocalRelapseWarning:
+    code: str
+    title: str
+    severity: str
+    explanation: str
+    hint: str
+    prior_claim_id: str
+    match_reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "title": self.title,
+            "severity": self.severity,
+            "explanation": self.explanation,
+            "hint": self.hint,
+            "prior_claim_id": self.prior_claim_id,
+            "match_reason": self.match_reason,
+        }
+
+
+def _normalize_intent(intent: str) -> str:
+    """Normalize claim intent for exact (not fuzzy) comparison.
+
+    Returns "" for trivially short/generic intents (< 2 tokens or < 6 chars) so a
+    single shared word can never trigger a match.
+    """
+    text = re.sub(r"[^a-z0-9 ]+", " ", (intent or "").lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) < 6 or len(text.split()) < 2:
+        return ""
+    return text
+
+
+def _normalize_scope(scope: str) -> str:
+    s = (scope or ".").replace("\\", "/").strip()
+    if s.startswith("./"):
+        s = s[2:]
+    s = s.rstrip("/")
+    return s or "."
+
+
+def _scope_is_under(child: str, parent: str) -> bool:
+    return parent == "." or child == parent or child.startswith(parent + "/")
+
+
+def _scopes_overlap(a: str, b: str) -> bool:
+    """True when two declared scopes refer to the same or nested paths."""
+    na, nb = _normalize_scope(a), _normalize_scope(b)
+    return _scope_is_under(na, nb) or _scope_is_under(nb, na)
+
+
+def _normalize_command(cmd: object) -> str:
+    """Fingerprint a command, but only when it names a specific target.
+
+    Generic bare tools (``pytest``, ``npm test``, ``ruff check .``) return "" so
+    they can never be the basis of a relapse match. A fingerprint is
+    ``"<tool> <sorted specific targets>"`` where a target contains a path/selector.
+    """
+    if isinstance(cmd, str):
+        tokens = cmd.split()
+    elif isinstance(cmd, (list, tuple)):
+        tokens = [str(t) for t in cmd]
+    else:
+        return ""
+    meaningful = [
+        t for t in tokens
+        if t and not t.startswith("-") and t.rsplit("/", 1)[-1] not in _CMD_WRAPPERS
+    ]
+    if not meaningful:
+        return ""
+    tool = meaningful[0].rsplit("/", 1)[-1]
+    targets = sorted(
+        t for t in meaningful[1:] if ("/" in t or "::" in t or re.search(r"\.\w+$", t))
+    )
+    if not targets:
+        return ""
+    return tool + " " + " ".join(targets)
+
+
+def _command_fingerprints(claim: Mapping[str, Any]) -> set[str]:
+    fps: set[str] = set()
+    for entry in claim.get("falsifiers", []) or []:
+        cmd = entry.get("command") if isinstance(entry, Mapping) else entry
+        fp = _normalize_command(cmd)
+        if fp:
+            fps.add(fp)
+    return fps
+
+
+_WARN_LOCAL_RELAPSE_EXPLANATION = (
+    "This change resembles a previously contradicted local claim with overlapping scope."
+)
+_WARN_LOCAL_RELAPSE_HINT = (
+    "Review the prior contradicted claim and add targeted evidence before relying "
+    "on the current result."
+)
+
+
+def detect_local_relapse_warnings(
+    settled_claims: list[dict[str, Any]],
+    changed_files: list[str],
+) -> list[LocalRelapseWarning]:
+    """Flag current claims that resemble a previously contradicted local claim.
+
+    Conservative and local-only. A warning is emitted only when, for a claim
+    covering the current change set, a *different* local claim with CONTRADICTED
+    status has an overlapping scope and either the same normalized intent or a
+    shared specific (non-generic) command fingerprint. De-duplicated per prior
+    claim id and ordered deterministically by that id. Advisory only — it never
+    asserts recurrence, correctness, safety, or blame.
+    """
+    contradicted = [c for c in settled_claims if _status_of(c) == STATUS_CONTRADICTED]
+    if not contradicted:
+        return []
+    current = [
+        c for c in settled_claims
+        if any(file_under_scope(f, c.get("scope_path", ".")) for f in changed_files)
+    ]
+    if not current:
+        return []
+
+    by_prior: dict[str, LocalRelapseWarning] = {}
+    for cur in current:
+        cur_id = cur.get("claim_id")
+        cur_intent = _normalize_intent(cur.get("intent", ""))
+        cur_scope = cur.get("scope_path", ".")
+        cur_cmds = _command_fingerprints(cur)
+        for prior in contradicted:
+            prior_id = prior.get("claim_id")
+            if not prior_id or prior_id == cur_id or prior_id in by_prior:
+                continue
+            if not _scopes_overlap(cur_scope, prior.get("scope_path", ".")):
+                continue
+            intent_match = bool(cur_intent) and cur_intent == _normalize_intent(
+                prior.get("intent", "")
+            )
+            command_match = bool(cur_cmds & _command_fingerprints(prior))
+            if not (intent_match or command_match):
+                continue
+            reason = (
+                "matching claim intent and overlapping scope"
+                if intent_match
+                else "matching command fingerprint and overlapping scope"
+            )
+            by_prior[prior_id] = LocalRelapseWarning(
+                code="LOCAL_RELAPSE_WARNING",
+                title="Possible local relapse signal",
+                severity="advisory",
+                explanation=_WARN_LOCAL_RELAPSE_EXPLANATION,
+                hint=_WARN_LOCAL_RELAPSE_HINT,
+                prior_claim_id=prior_id,
+                match_reason=reason,
+            )
+    return [by_prior[pid] for pid in sorted(by_prior)]
+
+
 # A pure policy function over already-computed X-Ray fields. It enforces an
 # explicit evidence policy; it never claims the code is correct or incorrect.
 
@@ -452,6 +625,7 @@ EVIDENCE_GATE_POLICIES = (
     "evidence-quality-warnings",
     "test-integrity-warnings",
     "evidence-coverage-warnings",
+    "local-relapse-warnings",
     "contradicted",
     "unsettled",
     "scope-drift",
@@ -490,6 +664,7 @@ def evaluate_evidence_gate(
     eq = int(counts.get("evidence_quality_warnings", 0))
     ti = int(counts.get("test_integrity_warnings", 0))
     coverage = int(counts.get("evidence_coverage_warnings", 0))
+    relapse = int(counts.get("local_relapse_warnings", 0))
     contradicted = int(counts.get("contradicted", 0))
     unsettled = int(counts.get("unsettled", 0))
     scope_drift = int(counts.get("scope_drift", 0))
@@ -506,6 +681,8 @@ def evaluate_evidence_gate(
             reasons.append(f"test integrity warnings present ({ti})")
         if coverage:
             reasons.append(f"evidence coverage warnings present ({coverage})")
+        if relapse:
+            reasons.append(f"local relapse warnings present ({relapse})")
     elif fail_on == "evidence-quality-warnings":
         if eq:
             reasons.append(f"evidence quality warnings present ({eq})")
@@ -515,6 +692,9 @@ def evaluate_evidence_gate(
     elif fail_on == "evidence-coverage-warnings":
         if coverage:
             reasons.append(f"evidence coverage warnings present ({coverage})")
+    elif fail_on == "local-relapse-warnings":
+        if relapse:
+            reasons.append(f"local relapse warnings present ({relapse})")
     elif fail_on == "contradicted":
         if contradicted:
             reasons.append(f"contradicted claims present ({contradicted})")
@@ -675,6 +855,7 @@ def generate_xray(
     eq_warnings = evidence_quality_warnings(settled_claims, changed_files)
     ti_warnings = detect_test_integrity_warnings(root, base=base, head=head)
     coverage_warnings = evidence_coverage_warnings(settled_claims, changed_files)
+    relapse_warnings = detect_local_relapse_warnings(settled_claims, changed_files)
 
     return {
         "schema_version": XRAY_SCHEMA_VERSION,
@@ -699,6 +880,7 @@ def generate_xray(
         "evidence_quality_warnings": [w.to_dict() for w in eq_warnings],
         "test_integrity_warnings": [w.to_dict() for w in ti_warnings],
         "evidence_coverage_warnings": [w.to_dict() for w in coverage_warnings],
+        "local_relapse_warnings": [w.to_dict() for w in relapse_warnings],
         "counts": {
             "changed_files": len(changed_files),
             "claims": len(claims),
@@ -717,6 +899,7 @@ def generate_xray(
             "evidence_quality_warnings": len(eq_warnings),
             "test_integrity_warnings": len(ti_warnings),
             "evidence_coverage_warnings": len(coverage_warnings),
+            "local_relapse_warnings": len(relapse_warnings),
         },
         "caveat": CAVEAT,
     }
@@ -910,6 +1093,24 @@ def render_markdown(xray: dict[str, Any]) -> str:
             lines.append(f"- **{w['title']}** — {w['explanation']} {w['hint']}")
         lines += [""]
 
+    # Local relapse warnings — advisory, only shown when present.
+    relapse_warnings = xray.get("local_relapse_warnings", [])
+    if relapse_warnings:
+        lines += ["## Local Relapse Warnings", ""]
+        lines += [
+            "_Advisory review prompts: a current claim resembles a previously "
+            "contradicted local claim with overlapping scope. They do not prove "
+            "the code is correct; review the prior contradiction before relying "
+            "on the current evidence._",
+            "",
+        ]
+        for w in relapse_warnings:
+            lines.append(f"- **{w['title']}** — {w['explanation']}")
+            lines.append(f"  - Prior claim: `{w['prior_claim_id']}`")
+            lines.append(f"  - Reason: {w['match_reason']}.")
+            lines.append(f"  - Next step: {w['hint']}")
+        lines += [""]
+
     # Settled claims
     lines += ["## Settled Claims", ""]
     settled = [c for c in xray["settled_claims"] if c["status"] != STATUS_LOCKED]
@@ -1060,6 +1261,9 @@ def render_pr_comment(xray: dict[str, Any]) -> str:
     coverage = int(counts.get("evidence_coverage_warnings", 0))
     if coverage:
         lines.append(f"- Evidence coverage warnings: {coverage}")
+    relapse = int(counts.get("local_relapse_warnings", 0))
+    if relapse:
+        lines.append(f"- Local relapse warnings: {relapse}")
     lines += ["", "Full receipt: `PR_EVIDENCE.md`"]
     return "\n".join(lines)
 
