@@ -18,11 +18,12 @@ _SEVERITY: dict[str, int] = {
     "CONTRADICTED_CLAIM": 1,
     "UNSETTLED_CLAIM": 2,
     "REVIEW_REQUIRED_RECEIPT": 3,
-    "TEST_INTEGRITY_WARNING": 4,
-    "EVIDENCE_COVERAGE_WARNING": 5,
-    "EVIDENCE_QUALITY_WARNING": 6,
-    "EVIDENCE_DARK_SOURCE": 7,
-    "SCOPE_DRIFT": 8,
+    "LOCAL_RELAPSE_WARNING": 4,
+    "TEST_INTEGRITY_WARNING": 5,
+    "EVIDENCE_COVERAGE_WARNING": 6,
+    "EVIDENCE_QUALITY_WARNING": 7,
+    "EVIDENCE_DARK_SOURCE": 8,
+    "SCOPE_DRIFT": 9,
 }
 
 
@@ -78,6 +79,14 @@ def compute_proof_debt(xray_result: Mapping[str, Any]) -> dict[str, Any]:
             )
         )
 
+    for warn in xray_result.get("local_relapse_warnings", []) or []:
+        items.append(
+            _item(
+                "LOCAL_RELAPSE_WARNING", warn.get("prior_claim_id", "-") or "-",
+                warn.get("title", ""), warn.get("explanation", ""), warn.get("hint", ""),
+            )
+        )
+
     for warn in xray_result.get("test_integrity_warnings", []) or []:
         items.append(
             _item("TEST_INTEGRITY_WARNING", "-", warn.get("title", ""),
@@ -119,6 +128,7 @@ def compute_proof_debt(xray_result: Mapping[str, Any]) -> dict[str, Any]:
         "unsettled_claims": int(counts.get("unsettled", 0)),
         "contradicted_claims": int(counts.get("contradicted", 0)),
         "review_required_receipts": 1 if label == "REVIEW REQUIRED" else 0,
+        "local_relapse_warnings": int(counts.get("local_relapse_warnings", 0)),
         "evidence_quality_warnings": int(counts.get("evidence_quality_warnings", 0)),
         "test_integrity_warnings": int(counts.get("test_integrity_warnings", 0)),
         "evidence_coverage_warnings": int(counts.get("evidence_coverage_warnings", 0)),
@@ -148,6 +158,7 @@ def render_proof_debt_text(debt: Mapping[str, Any]) -> str:
         f"- Unsettled claims: {s['unsettled_claims']}",
         f"- Contradicted claims: {s['contradicted_claims']}",
         f"- Receipts requiring review: {s['review_required_receipts']}",
+        f"- Local relapse signals: {s['local_relapse_warnings']}",
         f"- Evidence quality warnings: {s['evidence_quality_warnings']}",
         f"- Test integrity warnings: {s['test_integrity_warnings']}",
         f"- Evidence coverage warnings: {s['evidence_coverage_warnings']}",

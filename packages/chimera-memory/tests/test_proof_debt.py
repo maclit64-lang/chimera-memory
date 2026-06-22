@@ -153,6 +153,7 @@ def test_json_shape() -> None:
     assert debt["schema_version"] == PROOF_DEBT_SCHEMA_VERSION == 1
     assert set(debt["summary"]) == {
         "unsettled_claims", "contradicted_claims", "review_required_receipts",
+        "local_relapse_warnings",
         "evidence_quality_warnings", "test_integrity_warnings",
         "evidence_coverage_warnings", "evidence_dark_sources", "scope_drift",
     }
