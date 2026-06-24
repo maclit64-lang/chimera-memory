@@ -189,3 +189,17 @@ def render_tool_notes_text(notes: list[ToolNote]) -> str:
         if n.tags:
             lines.append(f"  tags: {', '.join(n.tags)}")
     return "\n".join(lines)
+
+
+def render_suggestions_text(notes: list[ToolNote]) -> str:
+    """Render exact-match suggestions for the CLI. Advisory only; no ranking.
+
+    Notes are listed in their stored (insertion) order — there is no scoring or
+    ranking. An empty result is reported plainly.
+    """
+    if not notes:
+        return "No matching tool lessons (advisory; exact-match)."
+    return (
+        "Candidate tool lessons (advisory; exact-match, no ranking):\n"
+        + render_tool_notes_text(notes)
+    )

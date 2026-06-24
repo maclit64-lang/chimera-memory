@@ -667,6 +667,16 @@ def _build_parser() -> argparse.ArgumentParser:
     tn_list.add_argument("--workflow", dest="workflow_name", help="Exact workflow_name filter")
     tn_list.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
     tn_list.add_argument("--memory-dir")
+    tn_suggest = tool_notes_sub.add_parser(
+        "suggest",
+        help="Suggest matching tool lessons by exact task_kind/tool/workflow/tag (advisory).",
+    )
+    tn_suggest.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    tn_suggest.add_argument("--task-kind", dest="task_kind", help="Exact task_kind match")
+    tn_suggest.add_argument("--tool", dest="tool_name", help="Exact tool_name match")
+    tn_suggest.add_argument("--workflow", dest="workflow_name", help="Exact workflow_name match")
+    tn_suggest.add_argument("--tag", dest="tag", help="Exact tag match (membership)")
+    tn_suggest.add_argument("--memory-dir")
     tool_notes_parser.set_defaults(command="tool-notes")
 
     failures_parser = subparsers.add_parser(
@@ -3886,6 +3896,7 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         build_tool_note,
         filter_tool_notes,
         read_tool_notes,
+        render_suggestions_text,
         render_tool_notes_text,
     )
 
@@ -3939,7 +3950,36 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         else:
             print(render_tool_notes_text(notes))
         return 0
-    print("usage: chimera-memory tool-notes {add,list}", file=__import__("sys").stderr)
+    if sub == "suggest":
+        task_kind = getattr(parsed, "task_kind", None)
+        tool_name = getattr(parsed, "tool_name", None)
+        workflow_name = getattr(parsed, "workflow_name", None)
+        tag = getattr(parsed, "tag", None)
+        matches = filter_tool_notes(
+            read_tool_notes(store),
+            task_kind=task_kind,
+            tool_name=tool_name,
+            workflow_name=workflow_name,
+            tag=tag,
+        )
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "query": {
+                        "task_kind": task_kind,
+                        "tool_name": tool_name,
+                        "workflow_name": workflow_name,
+                        "tag": tag,
+                    },
+                    "suggestions": [n.to_dict() for n in matches],
+                },
+                sort_keys=True,
+            ))
+        else:
+            print(render_suggestions_text(matches))
+        return 0
+    print("usage: chimera-memory tool-notes {add,list,suggest}", file=__import__("sys").stderr)
     return 2
 
 

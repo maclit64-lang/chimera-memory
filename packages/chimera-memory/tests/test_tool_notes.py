@@ -223,3 +223,97 @@ def test_cli_list_filtered_is_read_only(tmp_path: Path, capsys: pytest.CaptureFi
     _run(capsys, "tool-notes", "list", "--tool", "parallel-agents", "--memory-dir", str(mem))
     after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
     assert before == after
+
+
+# --- Stage 3C: suggest ------------------------------------------------------
+
+def test_cli_suggest_by_task_kind_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "tool-notes", "suggest", "--json", "--task-kind",
+                     "large-repo-forensics", "--memory-dir", str(mem))
+    assert code == 0
+    data = json.loads(out)
+    assert set(data) == {"schema_version", "query", "suggestions"}
+    assert data["query"]["task_kind"] == "large-repo-forensics"
+    assert len(data["suggestions"]) == 1
+    assert set(data["suggestions"][0]) == _NOTE_KEYS
+
+
+def test_cli_suggest_by_tool_workflow_tag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+
+    def count(*args: str) -> int:
+        _, out = _run(capsys, "tool-notes", "suggest", "--json", *args, "--memory-dir", str(mem))
+        return len(json.loads(out)["suggestions"])
+
+    assert count("--tool", "single-agent") == 1
+    assert count("--workflow", "unit-card-specialist-fanout") == 1
+    assert count("--tag", "orchestration") == 1
+
+
+def test_cli_suggest_no_match_is_empty_clean(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "tool-notes", "suggest", "--json", "--task-kind", "nope",
+                     "--memory-dir", str(mem))
+    assert code == 0
+    data = json.loads(out)
+    assert data["suggestions"] == []
+    assert set(data) == {"schema_version", "query", "suggestions"}
+    _, txt = _run(capsys, "tool-notes", "suggest", "--task-kind", "nope", "--memory-dir", str(mem))
+    assert "no matching tool lessons" in txt.lower()
+
+
+def test_suggest_is_deterministic_insertion_order_no_ranking(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="shared", tool_name="t1",
+                                         workflow_name="w", created_at="2026-01-01T00:00:01Z"))
+    add_tool_note(store, build_tool_note(task_kind="shared", tool_name="t2",
+                                         workflow_name="w", created_at="2026-01-01T00:00:02Z"))
+    add_tool_note(store, build_tool_note(task_kind="shared", tool_name="t3",
+                                         workflow_name="w", created_at="2026-01-01T00:00:03Z"))
+    mem = tmp_path / ".chimera-memory"
+    _, o1 = _run(capsys, "tool-notes", "suggest", "--json", "--task-kind", "shared",
+                 "--memory-dir", str(mem))
+    _, o2 = _run(capsys, "tool-notes", "suggest", "--json", "--task-kind", "shared",
+                 "--memory-dir", str(mem))
+    tools1 = [s["tool_name"] for s in json.loads(o1)["suggestions"]]
+    tools2 = [s["tool_name"] for s in json.loads(o2)["suggestions"]]
+    assert tools1 == ["t1", "t2", "t3"]  # stored insertion order, no ranking
+    assert tools1 == tools2              # deterministic across runs
+
+
+def test_cli_suggest_is_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    _run(capsys, "tool-notes", "suggest", "--json", "--task-kind",
+         "large-repo-forensics", "--memory-dir", str(mem))
+    _run(capsys, "tool-notes", "suggest", "--tag", "small", "--memory-dir", str(mem))
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after
+
+
+def test_suggest_no_forbidden_phrases(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    blob = ""
+    _, out = _run(capsys, "tool-notes", "suggest", "--task-kind",
+                  "large-repo-forensics", "--memory-dir", str(mem))
+    blob += out
+    _, out = _run(capsys, "tool-notes", "suggest", "--json", "--tag", "small", "--memory-dir", str(mem))
+    blob += out
+    _, out = _run(capsys, "tool-notes", "suggest", "--help")
+    blob += out
+    low = blob.lower()
+    for phrase in _FORBIDDEN:
+        assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
