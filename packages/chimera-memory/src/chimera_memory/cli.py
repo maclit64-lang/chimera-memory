@@ -607,6 +607,23 @@ def _build_parser() -> argparse.ArgumentParser:
     settled_claims_parser.add_argument("--memory-dir")
     settled_claims_parser.set_defaults(command="settled-claims")
 
+    handoff_parser = subparsers.add_parser(
+        "handoff",
+        help="Experimental read-only ledger-derived handoff summary (advisory, local-only).",
+        description=(
+            "Summarizes the local ledger for handoff: claims, what settled, what "
+            "remains unresolved, and what to inspect first. Experimental, local-only, "
+            "and read-only — an advisory evidence summary, not a correctness, safety, "
+            "merge, approval, or production-readiness signal."
+        ),
+    )
+    handoff_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    handoff_parser.add_argument(
+        "--markdown", action="store_true", help="Emit the markdown handoff (default view)"
+    )
+    handoff_parser.add_argument("--memory-dir")
+    handoff_parser.set_defaults(command="handoff")
+
     failures_parser = subparsers.add_parser(
         "failures",
         help="List CONTRADICTED claims with failure witnesses.",
@@ -1410,6 +1427,8 @@ def main(argv: list[str] | None = None) -> int:
         return _evidence_events(parsed)
     if parsed.command == "settled-claims":
         return _settled_claims(parsed)
+    if parsed.command == "handoff":
+        return _handoff(parsed)
     if parsed.command == "failures":
         return _failures(parsed)
     if parsed.command == "verify":
@@ -3766,6 +3785,35 @@ def _settled_claims(parsed: argparse.Namespace) -> int:
         ))
     else:
         print(f"{len(claims)} settled claim(s) projected (read-only).")
+    return 0
+
+
+def _handoff(parsed: argparse.Namespace) -> int:
+    """Experimental read-only ledger-derived handoff summary.
+
+    Advisory and local-only; reads the ledger and writes nothing. Not a
+    correctness, safety, merge, approval, or production-readiness signal.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.handoff import build_handoff, render_markdown
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    summary = build_handoff(store)
+    if parsed.json:
+        print(json.dumps(summary.to_dict(), sort_keys=True))
+        return 0
+    try:
+        store_label = str(store.memory_dir.relative_to(Path.cwd()))
+    except ValueError:
+        store_label = store.memory_dir.name
+    generated_at = datetime.now(UTC).isoformat()
+    print(render_markdown(summary, store_label=store_label, generated_at=generated_at))
     return 0
 
 
