@@ -31,8 +31,9 @@ _FORBIDDEN = (
     "proof",
 )
 
+# Stage 2B: `filters` is an additive 8th top-level key (was 7 in Stage 2).
 _TOP_KEYS = {
-    "schema_version", "advisory", "event_count", "settled_claim_count",
+    "schema_version", "advisory", "filters", "event_count", "settled_claim_count",
     "claims", "open_or_unresolved", "next_inspection_targets",
 }
 
@@ -198,3 +199,108 @@ def test_existing_projection_commands_still_work(
     assert json.loads(out_e)["schema_version"] == 1
     _, out_s = _run(capsys, "settled-claims", "--json", "--memory-dir", str(mem))
     assert json.loads(out_s)["schema_version"] == 1
+
+
+# --- Stage 2B: filters ------------------------------------------------------
+
+def test_filters_default_none_and_present_in_contract(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    d = handoff_for_root(tmp_path).to_dict()
+    assert d["filters"] == {"session_id": None, "claim_id": None, "status": None}
+
+
+def test_filter_by_claim(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    summary = handoff_for_root(tmp_path, claim_id="c1")
+    assert [c.claim_id for c in summary.claims] == ["c1"]
+    assert summary.settled_claim_count == 1
+    assert summary.filters.claim_id == "c1"
+
+
+def test_filter_by_claim_missing_returns_empty_with_advisory(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    summary = handoff_for_root(tmp_path, claim_id="does-not-exist")
+    assert summary.claims == ()
+    assert summary.settled_claim_count == 0
+    assert summary.open_or_unresolved == ()
+    assert summary.advisory == ADVISORY  # advisory intact
+
+
+def test_filter_by_status_exact(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    assert [c.claim_id for c in handoff_for_root(tmp_path, status="validated").claims] == ["c1"]
+    assert [c.claim_id for c in handoff_for_root(tmp_path, status="proposed").claims] == ["c2"]
+    assert handoff_for_root(tmp_path, status="nope").claims == ()
+
+
+def test_filter_by_session(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    summary = handoff_for_root(tmp_path, session_id="s1")
+    assert {c.claim_id for c in summary.claims} == {"c1", "c2"}  # both belong to s1
+    # a session with no matching claim returns empty (no invented ownership)
+    assert handoff_for_root(tmp_path, session_id="sX").claims == ()
+
+
+def test_filters_combine_with_and(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    summary = handoff_for_root(tmp_path, session_id="s1", status="validated")
+    assert [c.claim_id for c in summary.claims] == ["c1"]
+
+
+def test_event_count_stays_global_under_filter(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    full = handoff_for_root(tmp_path)
+    filtered = handoff_for_root(tmp_path, claim_id="c1")
+    assert filtered.event_count == full.event_count  # store-global, not narrowed
+
+
+def test_unfiltered_handoff_remains_compatible(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    summary = handoff_for_root(tmp_path)
+    assert summary.settled_claim_count == 2  # c1 + c2, unchanged from Stage 2 behavior
+    assert summary.filters.session_id is None
+    assert summary.filters.claim_id is None
+    assert summary.filters.status is None
+
+
+def test_cli_filter_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = _seed(tmp_path)
+    code, out = _run(capsys, "handoff", "--json", "--claim", "c1", "--memory-dir", str(mem))
+    assert code == 0
+    data = json.loads(out)
+    assert set(data) == _TOP_KEYS
+    assert data["filters"]["claim_id"] == "c1"
+    assert len(data["claims"]) == 1
+
+
+def test_cli_filter_markdown(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = _seed(tmp_path)
+    code, out = _run(capsys, "handoff", "--markdown", "--status", "proposed", "--memory-dir", str(mem))
+    assert code == 0
+    assert "filters:" in out
+    assert "`c2`" in out      # the proposed claim is shown
+    assert "`c1`" not in out  # the validated claim is filtered out
+
+
+def test_cli_filtered_handoff_is_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = _seed(tmp_path)
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    _run(capsys, "handoff", "--json", "--session", "s1", "--memory-dir", str(mem))
+    _run(capsys, "handoff", "--markdown", "--claim", "c1", "--memory-dir", str(mem))
+    _run(capsys, "handoff", "--json", "--status", "validated", "--memory-dir", str(mem))
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after
+
+
+def test_no_forbidden_phrases_in_filtered_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mem = _seed(tmp_path)
+    blob = ""
+    _, out = _run(capsys, "handoff", "--json", "--claim", "c1", "--memory-dir", str(mem))
+    blob += out
+    _, out = _run(capsys, "handoff", "--markdown", "--session", "s1", "--memory-dir", str(mem))
+    blob += out
+    low = blob.lower()
+    for phrase in _FORBIDDEN:
+        assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"

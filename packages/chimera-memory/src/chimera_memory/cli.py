@@ -621,6 +621,15 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument(
         "--markdown", action="store_true", help="Emit the markdown handoff (default view)"
     )
+    handoff_parser.add_argument(
+        "--session", dest="session_id", help="Filter to claims in this session id"
+    )
+    handoff_parser.add_argument(
+        "--claim", dest="claim_id", help="Filter to this claim id"
+    )
+    handoff_parser.add_argument(
+        "--status", help="Filter to claims whose latest_status matches exactly"
+    )
     handoff_parser.add_argument("--memory-dir")
     handoff_parser.set_defaults(command="handoff")
 
@@ -3804,7 +3813,12 @@ def _handoff(parsed: argparse.Namespace) -> int:
         if memory_dir
         else MemoryStore.from_paths(root=Path.cwd())
     )
-    summary = build_handoff(store)
+    summary = build_handoff(
+        store,
+        session_id=getattr(parsed, "session_id", None),
+        claim_id=getattr(parsed, "claim_id", None),
+        status=getattr(parsed, "status", None),
+    )
     if parsed.json:
         print(json.dumps(summary.to_dict(), sort_keys=True))
         return 0

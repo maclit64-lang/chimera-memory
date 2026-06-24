@@ -80,9 +80,26 @@ class HandoffTarget:
 
 
 @dataclass(frozen=True)
+class HandoffFilters:
+    """The read-only filters applied to this handoff (echoed for transparency)."""
+
+    session_id: str | None = None
+    claim_id: str | None = None
+    status: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "claim_id": self.claim_id,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
 class HandoffSummary:
     schema_version: int
     advisory: str
+    filters: HandoffFilters
     event_count: int
     settled_claim_count: int
     claims: tuple[HandoffClaim, ...]
@@ -93,6 +110,7 @@ class HandoffSummary:
         return {
             "schema_version": self.schema_version,
             "advisory": self.advisory,
+            "filters": self.filters.to_dict(),
             "event_count": self.event_count,
             "settled_claim_count": self.settled_claim_count,
             "claims": [c.to_dict() for c in self.claims],
@@ -116,14 +134,44 @@ def _reasons_for(claim: SettledClaim) -> tuple[str, ...]:
     return tuple(reasons)
 
 
-def build_handoff(store: MemoryStore) -> HandoffSummary:
+def build_handoff(
+    store: MemoryStore,
+    *,
+    session_id: str | None = None,
+    claim_id: str | None = None,
+    status: str | None = None,
+) -> HandoffSummary:
     """Build a HandoffSummary from the local ledger. Read-only.
 
     Reuses the projection stack (``project_evidence_events`` + ``fold_settled_claims``)
     rather than re-deriving anything; reads the ledger once.
+
+    Optional read-only filters narrow the claim-centric view (claims,
+    open/unresolved, next-inspection targets, settled_claim_count). They combine
+    with AND. ``event_count`` stays the store-global total (each claim's own
+    ``event_count`` already narrows with the filter). Filtering never mutates the
+    store and invents no ownership: a session matches a claim only when one of
+    the claim's own events carries that ``session_id``.
     """
     events = project_evidence_events(store)
     settled = fold_settled_claims(events)
+
+    # claim_ids that have a claim-owned event in the requested session. Events
+    # carry session_id on claim records (from metadata); this is the inferable
+    # link, not a proof of ownership.
+    session_claim_ids = {
+        e.claim_id
+        for e in events
+        if session_id is not None and e.session_id == session_id and e.claim_id is not None
+    }
+
+    selected = [
+        c
+        for c in settled
+        if (claim_id is None or c.claim_id == claim_id)
+        and (status is None or c.latest_status == status)
+        and (session_id is None or c.claim_id in session_claim_ids)
+    ]
 
     claims = tuple(
         HandoffClaim(
@@ -135,11 +183,11 @@ def build_handoff(store: MemoryStore) -> HandoffSummary:
             has_score_record=c.has_score_record,
             latest_exit_code=c.latest_exit_code,
         )
-        for c in settled
+        for c in selected
     )
 
     open_items: list[HandoffOpenItem] = []
-    for c in settled:
+    for c in selected:
         reasons = _reasons_for(c)
         if reasons:
             open_items.append(HandoffOpenItem(claim_id=c.claim_id, reasons=reasons))
@@ -155,17 +203,29 @@ def build_handoff(store: MemoryStore) -> HandoffSummary:
     return HandoffSummary(
         schema_version=SCHEMA_VERSION,
         advisory=ADVISORY,
+        filters=HandoffFilters(session_id=session_id, claim_id=claim_id, status=status),
         event_count=len(events),
-        settled_claim_count=len(settled),
+        settled_claim_count=len(selected),
         claims=claims,
         open_or_unresolved=tuple(open_items),
         next_inspection_targets=tuple(targets),
     )
 
 
-def handoff_for_root(root: str | Path) -> HandoffSummary:
+def handoff_for_root(
+    root: str | Path,
+    *,
+    session_id: str | None = None,
+    claim_id: str | None = None,
+    status: str | None = None,
+) -> HandoffSummary:
     """Convenience wrapper: build a handoff for a repo root's ``.chimera-memory``."""
-    return build_handoff(MemoryStore.from_paths(root=root))
+    return build_handoff(
+        MemoryStore.from_paths(root=root),
+        session_id=session_id,
+        claim_id=claim_id,
+        status=status,
+    )
 
 
 def render_markdown(
@@ -188,6 +248,13 @@ def render_markdown(
     lines.append(f"- generated_at: {generated_at}")
     lines.append(f"- event_count: {summary.event_count}")
     lines.append(f"- settled_claim_count: {summary.settled_claim_count}")
+    _f = summary.filters
+    _filter_label = (
+        f"session_id={_f.session_id} claim_id={_f.claim_id} status={_f.status}"
+        if (_f.session_id or _f.claim_id or _f.status)
+        else "none"
+    )
+    lines.append(f"- filters: {_filter_label}")
     lines.append("")
     lines.append("## Claims")
     if summary.claims:
