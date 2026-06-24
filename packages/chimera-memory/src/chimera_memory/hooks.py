@@ -430,7 +430,7 @@ fi
 
 # Find most recent LOCKED claim using text output
 LOCKED_ID=$(chimera-memory claim list 2>/dev/null \
-  | grep " LOCKED " | tail -1 | awk "{print \$1}" || true)
+  | grep " LOCKED " | tail -1 | awk "{print \\$1}" || true)
 
 if [ -z "$LOCKED_ID" ]; then
   exit 0
