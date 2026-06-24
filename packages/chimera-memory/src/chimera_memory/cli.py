@@ -577,6 +577,36 @@ def _build_parser() -> argparse.ArgumentParser:
     proof_debt_parser.add_argument("--memory-dir")
     proof_debt_parser.set_defaults(command="proof-debt")
 
+    evidence_events_parser = subparsers.add_parser(
+        "evidence-events",
+        help="Experimental read-only debug view: project the local ledger to EvidenceEvents.",
+        description=(
+            "Projects the local append-only ledger (claims/outcomes/scores/sessions) "
+            "into EvidenceEvents. Experimental, local-only, and read-only — it wraps "
+            "records that already exist and is not a correctness, safety, or merge signal."
+        ),
+    )
+    evidence_events_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    evidence_events_parser.add_argument("--memory-dir")
+    evidence_events_parser.set_defaults(command="evidence-events")
+
+    settled_claims_parser = subparsers.add_parser(
+        "settled-claims",
+        help="Experimental read-only debug view: fold the local ledger into SettledClaims.",
+        description=(
+            "Folds EvidenceEvents into one SettledClaim per claim_id. Experimental, "
+            "local-only, and read-only — an evidence-status fold over existing records, "
+            "not a correctness, safety, or merge signal."
+        ),
+    )
+    settled_claims_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    settled_claims_parser.add_argument("--memory-dir")
+    settled_claims_parser.set_defaults(command="settled-claims")
+
     failures_parser = subparsers.add_parser(
         "failures",
         help="List CONTRADICTED claims with failure witnesses.",
@@ -1376,6 +1406,10 @@ def main(argv: list[str] | None = None) -> int:
         return _status(parsed)
     if parsed.command == "proof-debt":
         return _proof_debt(parsed)
+    if parsed.command == "evidence-events":
+        return _evidence_events(parsed)
+    if parsed.command == "settled-claims":
+        return _settled_claims(parsed)
     if parsed.command == "failures":
         return _failures(parsed)
     if parsed.command == "verify":
@@ -3683,6 +3717,56 @@ def _apply_evidence_gate(result: dict, fail_on: str) -> int:
     for reason in gate.reasons:
         print(f"  - {reason}", file=_sys.stderr)
     return 2
+
+
+def _evidence_events(parsed: argparse.Namespace) -> int:
+    """Experimental read-only debug view: project the ledger to EvidenceEvents.
+
+    Local-only and read-only; wraps records that already exist. Not a
+    correctness, safety, or merge signal.
+    """
+    from chimera_memory.evidence_events import SCHEMA_VERSION, project_evidence_events
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    events = project_evidence_events(store)
+    if parsed.json:
+        print(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "events": [e.to_dict() for e in events]},
+            sort_keys=True,
+        ))
+    else:
+        print(f"{len(events)} evidence event(s) projected (read-only).")
+    return 0
+
+
+def _settled_claims(parsed: argparse.Namespace) -> int:
+    """Experimental read-only debug view: fold the ledger into SettledClaims.
+
+    Local-only and read-only; an evidence-status fold over existing records.
+    Not a correctness, safety, or merge signal.
+    """
+    from chimera_memory.settled_claims import SCHEMA_VERSION, project_settled_claims
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    claims = project_settled_claims(store)
+    if parsed.json:
+        print(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "settled_claims": [c.to_dict() for c in claims]},
+            sort_keys=True,
+        ))
+    else:
+        print(f"{len(claims)} settled claim(s) projected (read-only).")
+    return 0
 
 
 def _proof_debt(parsed: argparse.Namespace) -> int:
