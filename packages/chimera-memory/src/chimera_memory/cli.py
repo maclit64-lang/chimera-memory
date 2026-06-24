@@ -633,6 +633,26 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--memory-dir")
     handoff_parser.set_defaults(command="handoff")
 
+    tool_notes_parser = subparsers.add_parser(
+        "tool-notes",
+        help="Record/list manual, local, advisory tool & workflow lessons (agent skill memory).",
+    )
+    tool_notes_sub = tool_notes_parser.add_subparsers(dest="tool_notes_command")
+    tn_add = tool_notes_sub.add_parser("add", help="Record one tool/workflow lesson")
+    tn_add.add_argument("--task-kind", dest="task_kind")
+    tn_add.add_argument("--tool", dest="tool_name")
+    tn_add.add_argument("--workflow", dest="workflow_name")
+    tn_add.add_argument("--lesson")
+    tn_add.add_argument("--evidence")
+    tn_add.add_argument("--caveat")
+    tn_add.add_argument("--source", default="manual")
+    tn_add.add_argument("--tag", action="append", dest="tags", default=[], help="Repeatable tag")
+    tn_add.add_argument("--memory-dir")
+    tn_list = tool_notes_sub.add_parser("list", help="List recorded tool notes")
+    tn_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    tn_list.add_argument("--memory-dir")
+    tool_notes_parser.set_defaults(command="tool-notes")
+
     failures_parser = subparsers.add_parser(
         "failures",
         help="List CONTRADICTED claims with failure witnesses.",
@@ -1438,6 +1458,8 @@ def main(argv: list[str] | None = None) -> int:
         return _settled_claims(parsed)
     if parsed.command == "handoff":
         return _handoff(parsed)
+    if parsed.command == "tool-notes":
+        return _tool_notes(parsed)
     if parsed.command == "failures":
         return _failures(parsed)
     if parsed.command == "verify":
@@ -3829,6 +3851,56 @@ def _handoff(parsed: argparse.Namespace) -> int:
     generated_at = datetime.now(UTC).isoformat()
     print(render_markdown(summary, store_label=store_label, generated_at=generated_at))
     return 0
+
+
+def _tool_notes(parsed: argparse.Namespace) -> int:
+    """Manual, local, advisory tool notes (agent skill memory).
+
+    ``add`` appends one note to a separate ``tool_notes.jsonl``; ``list`` reads
+    them. Not a correctness, safety, merge, approval, production-readiness, or
+    optimality claim.
+    """
+    from chimera_memory.tool_notes import (
+        SCHEMA_VERSION,
+        add_tool_note,
+        build_tool_note,
+        read_tool_notes,
+        render_tool_notes_text,
+    )
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    sub = getattr(parsed, "tool_notes_command", None)
+    if sub == "add":
+        note = build_tool_note(
+            task_kind=parsed.task_kind,
+            tool_name=parsed.tool_name,
+            workflow_name=parsed.workflow_name,
+            lesson=parsed.lesson,
+            evidence=parsed.evidence,
+            caveat=parsed.caveat,
+            source=parsed.source,
+            tags=tuple(parsed.tags or ()),
+        )
+        add_tool_note(store, note)
+        print(note.note_id)
+        return 0
+    if sub == "list":
+        notes = read_tool_notes(store)
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": SCHEMA_VERSION, "tool_notes": [n.to_dict() for n in notes]},
+                sort_keys=True,
+            ))
+        else:
+            print(render_tool_notes_text(notes))
+        return 0
+    print("usage: chimera-memory tool-notes {add,list}", file=__import__("sys").stderr)
+    return 2
 
 
 def _proof_debt(parsed: argparse.Namespace) -> int:

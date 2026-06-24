@@ -16,6 +16,7 @@ import pytest
 from chimera_memory.cli import main
 from chimera_memory.handoff import ADVISORY, build_handoff, handoff_for_root, render_markdown
 from chimera_memory.storage import MemoryStore
+from chimera_memory.tool_notes import add_tool_note, build_tool_note
 
 _FORBIDDEN = (
     "safe to merge",
@@ -32,9 +33,10 @@ _FORBIDDEN = (
 )
 
 # Stage 2B: `filters` is an additive 8th top-level key (was 7 in Stage 2).
+# Stage 3: `tool_notes` is an additive 9th top-level key.
 _TOP_KEYS = {
     "schema_version", "advisory", "filters", "event_count", "settled_claim_count",
-    "claims", "open_or_unresolved", "next_inspection_targets",
+    "claims", "open_or_unresolved", "next_inspection_targets", "tool_notes",
 }
 
 
@@ -304,3 +306,57 @@ def test_no_forbidden_phrases_in_filtered_output(
     low = blob.lower()
     for phrase in _FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# --- Stage 3: tool-notes integration ----------------------------------------
+
+def test_handoff_tool_notes_empty_by_default(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    summary = handoff_for_root(tmp_path)
+    assert summary.tool_notes == ()
+    assert summary.to_dict()["tool_notes"] == []
+    # markdown shows no Tool lessons section when there are no notes
+    md = render_markdown(summary, store_label=".chimera-memory", generated_at="2026-01-01T00:00:00Z")
+    assert "## Tool lessons" not in md
+
+
+def test_handoff_includes_tool_lessons_when_notes_exist(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout",
+        lesson="Use coverage manifests before synthesis.",
+        evidence="2189/2189 files read.", caveat="High cost/time.",
+    ))
+    summary = handoff_for_root(tmp_path)
+    assert len(summary.tool_notes) == 1
+    d = summary.to_dict()
+    assert set(d) == _TOP_KEYS
+    assert len(d["tool_notes"]) == 1
+    assert d["tool_notes"][0]["task_kind"] == "large-repo-forensics"
+    md = render_markdown(summary, store_label=".chimera-memory", generated_at="2026-01-01T00:00:00Z")
+    assert "## Tool lessons" in md
+    assert "parallel-agents / unit-card-specialist-fanout" in md
+    assert "Use coverage manifests before synthesis." in md
+
+
+def test_handoff_tool_notes_shown_regardless_of_claim_filter(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", workflow_name="w"))
+    # a claim filter narrows claims but tool notes remain (they are not claim-scoped)
+    summary = handoff_for_root(tmp_path, claim_id="c1")
+    assert [c.claim_id for c in summary.claims] == ["c1"]
+    assert len(summary.tool_notes) == 1
+
+
+def test_cli_handoff_json_includes_tool_notes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = _seed(tmp_path)
+    _run(capsys, "tool-notes", "add", "--task-kind", "k", "--tool", "t",
+         "--workflow", "w", "--lesson", "l", "--memory-dir", str(mem))
+    code, out = _run(capsys, "handoff", "--json", "--memory-dir", str(mem))
+    assert code == 0
+    data = json.loads(out)
+    assert set(data) == _TOP_KEYS
+    assert len(data["tool_notes"]) == 1

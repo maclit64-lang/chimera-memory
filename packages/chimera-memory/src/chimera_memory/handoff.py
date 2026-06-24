@@ -20,6 +20,7 @@ from typing import Any
 from chimera_memory.evidence_events import project_evidence_events
 from chimera_memory.settled_claims import SettledClaim, fold_settled_claims
 from chimera_memory.storage import MemoryStore
+from chimera_memory.tool_notes import ToolNote, read_tool_notes
 
 SCHEMA_VERSION = 1
 
@@ -105,6 +106,7 @@ class HandoffSummary:
     claims: tuple[HandoffClaim, ...]
     open_or_unresolved: tuple[HandoffOpenItem, ...]
     next_inspection_targets: tuple[HandoffTarget, ...]
+    tool_notes: tuple[ToolNote, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -116,6 +118,7 @@ class HandoffSummary:
             "claims": [c.to_dict() for c in self.claims],
             "open_or_unresolved": [o.to_dict() for o in self.open_or_unresolved],
             "next_inspection_targets": [t.to_dict() for t in self.next_inspection_targets],
+            "tool_notes": [n.to_dict() for n in self.tool_notes],
         }
 
 
@@ -209,6 +212,7 @@ def build_handoff(
         claims=claims,
         open_or_unresolved=tuple(open_items),
         next_inspection_targets=tuple(targets),
+        tool_notes=tuple(read_tool_notes(store)),
     )
 
 
@@ -283,4 +287,15 @@ def render_markdown(
     else:
         lines.append("- (none)")
     lines.append("")
+    if summary.tool_notes:
+        lines.append("## Tool lessons")
+        for n in summary.tool_notes:
+            lines.append(f"- [{n.task_kind}] {n.tool_name} / {n.workflow_name}:")
+            if n.lesson:
+                lines.append(f"  {n.lesson}")
+            if n.evidence:
+                lines.append(f"  Evidence: {n.evidence}")
+            if n.caveat:
+                lines.append(f"  Caveat: {n.caveat}")
+        lines.append("")
     return "\n".join(lines)
