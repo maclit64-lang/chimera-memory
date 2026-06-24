@@ -149,6 +149,29 @@ def tool_notes_for_root(root: str | Path) -> list[ToolNote]:
     return read_tool_notes(MemoryStore.from_paths(root=root))
 
 
+def filter_tool_notes(
+    notes: list[ToolNote],
+    *,
+    task_kind: str | None = None,
+    tool_name: str | None = None,
+    workflow_name: str | None = None,
+    tag: str | None = None,
+) -> list[ToolNote]:
+    """Exact-match filter over tool notes; criteria combine with AND.
+
+    No fuzzy matching, no semantic search, no ranking. ``tag`` matches when it is
+    present in a note's ``tags``. A ``None`` criterion is not applied.
+    """
+    return [
+        n
+        for n in notes
+        if (task_kind is None or n.task_kind == task_kind)
+        and (tool_name is None or n.tool_name == tool_name)
+        and (workflow_name is None or n.workflow_name == workflow_name)
+        and (tag is None or tag in n.tags)
+    ]
+
+
 def render_tool_notes_text(notes: list[ToolNote]) -> str:
     """Render a terse text listing for the CLI. Advisory only."""
     if not notes:

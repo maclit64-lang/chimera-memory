@@ -20,7 +20,7 @@ from typing import Any
 from chimera_memory.evidence_events import project_evidence_events
 from chimera_memory.settled_claims import SettledClaim, fold_settled_claims
 from chimera_memory.storage import MemoryStore
-from chimera_memory.tool_notes import ToolNote, read_tool_notes
+from chimera_memory.tool_notes import ToolNote, filter_tool_notes, read_tool_notes
 
 SCHEMA_VERSION = 1
 
@@ -82,17 +82,29 @@ class HandoffTarget:
 
 @dataclass(frozen=True)
 class HandoffFilters:
-    """The read-only filters applied to this handoff (echoed for transparency)."""
+    """The read-only filters applied to this handoff (echoed for transparency).
+
+    ``session_id`` / ``claim_id`` / ``status`` narrow the claim view;
+    ``task_kind`` / ``tool_name`` / ``workflow_name`` / ``tag`` narrow tool notes.
+    """
 
     session_id: str | None = None
     claim_id: str | None = None
     status: str | None = None
+    task_kind: str | None = None
+    tool_name: str | None = None
+    workflow_name: str | None = None
+    tag: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
             "claim_id": self.claim_id,
             "status": self.status,
+            "task_kind": self.task_kind,
+            "tool_name": self.tool_name,
+            "workflow_name": self.workflow_name,
+            "tag": self.tag,
         }
 
 
@@ -143,6 +155,10 @@ def build_handoff(
     session_id: str | None = None,
     claim_id: str | None = None,
     status: str | None = None,
+    task_kind: str | None = None,
+    tool_name: str | None = None,
+    workflow_name: str | None = None,
+    tag: str | None = None,
 ) -> HandoffSummary:
     """Build a HandoffSummary from the local ledger. Read-only.
 
@@ -206,13 +222,27 @@ def build_handoff(
     return HandoffSummary(
         schema_version=SCHEMA_VERSION,
         advisory=ADVISORY,
-        filters=HandoffFilters(session_id=session_id, claim_id=claim_id, status=status),
+        filters=HandoffFilters(
+            session_id=session_id,
+            claim_id=claim_id,
+            status=status,
+            task_kind=task_kind,
+            tool_name=tool_name,
+            workflow_name=workflow_name,
+            tag=tag,
+        ),
         event_count=len(events),
         settled_claim_count=len(selected),
         claims=claims,
         open_or_unresolved=tuple(open_items),
         next_inspection_targets=tuple(targets),
-        tool_notes=tuple(read_tool_notes(store)),
+        tool_notes=tuple(filter_tool_notes(
+            read_tool_notes(store),
+            task_kind=task_kind,
+            tool_name=tool_name,
+            workflow_name=workflow_name,
+            tag=tag,
+        )),
     )
 
 
@@ -222,6 +252,10 @@ def handoff_for_root(
     session_id: str | None = None,
     claim_id: str | None = None,
     status: str | None = None,
+    task_kind: str | None = None,
+    tool_name: str | None = None,
+    workflow_name: str | None = None,
+    tag: str | None = None,
 ) -> HandoffSummary:
     """Convenience wrapper: build a handoff for a repo root's ``.chimera-memory``."""
     return build_handoff(
@@ -229,6 +263,10 @@ def handoff_for_root(
         session_id=session_id,
         claim_id=claim_id,
         status=status,
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=workflow_name,
+        tag=tag,
     )
 
 
@@ -253,10 +291,18 @@ def render_markdown(
     lines.append(f"- event_count: {summary.event_count}")
     lines.append(f"- settled_claim_count: {summary.settled_claim_count}")
     _f = summary.filters
+    _active = {
+        "session_id": _f.session_id,
+        "claim_id": _f.claim_id,
+        "status": _f.status,
+        "task_kind": _f.task_kind,
+        "tool_name": _f.tool_name,
+        "workflow_name": _f.workflow_name,
+        "tag": _f.tag,
+    }
+    _set_filters = {k: v for k, v in _active.items() if v}
     _filter_label = (
-        f"session_id={_f.session_id} claim_id={_f.claim_id} status={_f.status}"
-        if (_f.session_id or _f.claim_id or _f.status)
-        else "none"
+        " ".join(f"{k}={v}" for k, v in _set_filters.items()) if _set_filters else "none"
     )
     lines.append(f"- filters: {_filter_label}")
     lines.append("")

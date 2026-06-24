@@ -208,7 +208,11 @@ def test_existing_projection_commands_still_work(
 def test_filters_default_none_and_present_in_contract(tmp_path: Path) -> None:
     _seed(tmp_path)
     d = handoff_for_root(tmp_path).to_dict()
-    assert d["filters"] == {"session_id": None, "claim_id": None, "status": None}
+    # Stage 3B: filters extended with tool-note keys (all default None).
+    assert d["filters"] == {
+        "session_id": None, "claim_id": None, "status": None,
+        "task_kind": None, "tool_name": None, "workflow_name": None, "tag": None,
+    }
 
 
 def test_filter_by_claim(tmp_path: Path) -> None:
@@ -359,4 +363,62 @@ def test_cli_handoff_json_includes_tool_notes(tmp_path: Path, capsys: pytest.Cap
     assert code == 0
     data = json.loads(out)
     assert set(data) == _TOP_KEYS
+    assert len(data["tool_notes"]) == 1
+
+
+# --- Stage 3B: handoff tool-note filters ------------------------------------
+
+def _add_two_notes(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(
+        task_kind="A", tool_name="ta", workflow_name="wa", tags=("x",)))
+    add_tool_note(store, build_tool_note(
+        task_kind="B", tool_name="tb", workflow_name="wb", tags=("y",)))
+
+
+def test_handoff_task_kind_filters_tool_notes_only(tmp_path: Path) -> None:
+    _seed(tmp_path)          # claims c1 (validated) + c2 (proposed)
+    _add_two_notes(tmp_path)
+    summary = handoff_for_root(tmp_path, task_kind="A")
+    assert [n.task_kind for n in summary.tool_notes] == ["A"]
+    assert summary.settled_claim_count == 2  # claims NOT affected by tool-note filter
+    assert summary.filters.task_kind == "A"
+
+
+def test_handoff_tag_filters_tool_notes_only(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    _add_two_notes(tmp_path)
+    summary = handoff_for_root(tmp_path, tag="y")
+    assert [n.task_kind for n in summary.tool_notes] == ["B"]
+    assert summary.settled_claim_count == 2
+
+
+def test_handoff_claim_filter_still_works_with_tool_note_filter(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    _add_two_notes(tmp_path)
+    summary = handoff_for_root(tmp_path, claim_id="c1", task_kind="A")
+    assert [c.claim_id for c in summary.claims] == ["c1"]      # claim filter applied
+    assert [n.task_kind for n in summary.tool_notes] == ["A"]  # tool-note filter applied
+
+
+def test_handoff_existing_claim_session_status_filters_unaffected(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    _add_two_notes(tmp_path)
+    assert [c.claim_id for c in handoff_for_root(tmp_path, status="validated").claims] == ["c1"]
+    assert {c.claim_id for c in handoff_for_root(tmp_path, session_id="s1").claims} == {"c1", "c2"}
+    assert [c.claim_id for c in handoff_for_root(tmp_path, claim_id="c2").claims] == ["c2"]
+
+
+def test_cli_handoff_tool_note_filter_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _seed(tmp_path)
+    _add_two_notes(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "handoff", "--json", "--task-kind", "A", "--memory-dir", str(mem))
+    assert code == 0
+    data = json.loads(out)
+    assert set(data) == _TOP_KEYS
+    assert set(data["filters"]) == {
+        "session_id", "claim_id", "status", "task_kind", "tool_name", "workflow_name", "tag",
+    }
+    assert data["filters"]["task_kind"] == "A"
     assert len(data["tool_notes"]) == 1

@@ -18,6 +18,7 @@ from chimera_memory.storage import MemoryStore
 from chimera_memory.tool_notes import (
     add_tool_note,
     build_tool_note,
+    filter_tool_notes,
     make_note_id,
     read_tool_notes,
 )
@@ -97,7 +98,12 @@ def test_cli_list_empty_store(tmp_path: Path, capsys: pytest.CaptureFixture[str]
     mem.mkdir()
     code, out = _run(capsys, "tool-notes", "list", "--json", "--memory-dir", str(mem))
     assert code == 0
-    assert json.loads(out) == {"schema_version": 1, "tool_notes": []}
+    # Stage 3B: `filters` is an additive object on the list JSON.
+    assert json.loads(out) == {
+        "schema_version": 1,
+        "filters": {"task_kind": None, "tool_name": None, "workflow_name": None, "tag": None},
+        "tool_notes": [],
+    }
 
 
 def test_tool_notes_do_not_alter_projection(tmp_path: Path) -> None:
@@ -135,3 +141,85 @@ def test_no_forbidden_overclaim_phrases(tmp_path: Path, capsys: pytest.CaptureFi
     low = blob.lower()
     for phrase in _FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# --- Stage 3B: exact-match filters ------------------------------------------
+
+def _seed_two(store: MemoryStore) -> None:
+    add_tool_note(store, build_tool_note(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout", tags=("repo-forensics", "orchestration"),
+    ))
+    add_tool_note(store, build_tool_note(
+        task_kind="quick-fix", tool_name="single-agent",
+        workflow_name="direct-edit", tags=("small",),
+    ))
+
+
+def test_filter_by_task_kind(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    r = filter_tool_notes(read_tool_notes(store), task_kind="large-repo-forensics")
+    assert [n.tool_name for n in r] == ["parallel-agents"]
+
+
+def test_filter_by_tool(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    r = filter_tool_notes(read_tool_notes(store), tool_name="single-agent")
+    assert [n.task_kind for n in r] == ["quick-fix"]
+
+
+def test_filter_by_workflow(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    r = filter_tool_notes(read_tool_notes(store), workflow_name="unit-card-specialist-fanout")
+    assert len(r) == 1 and r[0].task_kind == "large-repo-forensics"
+
+
+def test_filter_by_tag(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    assert len(filter_tool_notes(read_tool_notes(store), tag="orchestration")) == 1
+    assert len(filter_tool_notes(read_tool_notes(store), tag="small")) == 1
+
+
+def test_filters_combine_with_and(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    # task_kind matches note A, but tag 'small' belongs to note B -> AND yields none
+    r = filter_tool_notes(read_tool_notes(store), task_kind="large-repo-forensics", tag="small")
+    assert r == []
+    r2 = filter_tool_notes(read_tool_notes(store), tool_name="parallel-agents", tag="orchestration")
+    assert len(r2) == 1
+
+
+def test_missing_filter_returns_empty(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    assert filter_tool_notes(read_tool_notes(store), task_kind="does-not-exist") == []
+
+
+def test_cli_list_filter_json_preserves_schema(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "tool-notes", "list", "--json", "--task-kind",
+                     "large-repo-forensics", "--memory-dir", str(mem))
+    assert code == 0
+    data = json.loads(out)
+    assert set(data) == {"schema_version", "filters", "tool_notes"}
+    assert data["filters"]["task_kind"] == "large-repo-forensics"
+    assert len(data["tool_notes"]) == 1
+    assert set(data["tool_notes"][0]) == _NOTE_KEYS
+
+
+def test_cli_list_filtered_is_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    _run(capsys, "tool-notes", "list", "--json", "--tag", "small", "--memory-dir", str(mem))
+    _run(capsys, "tool-notes", "list", "--tool", "parallel-agents", "--memory-dir", str(mem))
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after

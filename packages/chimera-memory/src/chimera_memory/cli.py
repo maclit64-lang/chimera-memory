@@ -630,6 +630,18 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument(
         "--status", help="Filter to claims whose latest_status matches exactly"
     )
+    handoff_parser.add_argument(
+        "--task-kind", dest="task_kind", help="Filter tool lessons by exact task_kind"
+    )
+    handoff_parser.add_argument(
+        "--tool", dest="tool_name", help="Filter tool lessons by exact tool_name"
+    )
+    handoff_parser.add_argument(
+        "--workflow", dest="workflow_name", help="Filter tool lessons by exact workflow_name"
+    )
+    handoff_parser.add_argument(
+        "--tag", dest="tag", help="Filter tool lessons by exact tag"
+    )
     handoff_parser.add_argument("--memory-dir")
     handoff_parser.set_defaults(command="handoff")
 
@@ -650,6 +662,10 @@ def _build_parser() -> argparse.ArgumentParser:
     tn_add.add_argument("--memory-dir")
     tn_list = tool_notes_sub.add_parser("list", help="List recorded tool notes")
     tn_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    tn_list.add_argument("--task-kind", dest="task_kind", help="Exact task_kind filter")
+    tn_list.add_argument("--tool", dest="tool_name", help="Exact tool_name filter")
+    tn_list.add_argument("--workflow", dest="workflow_name", help="Exact workflow_name filter")
+    tn_list.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
     tn_list.add_argument("--memory-dir")
     tool_notes_parser.set_defaults(command="tool-notes")
 
@@ -3840,6 +3856,10 @@ def _handoff(parsed: argparse.Namespace) -> int:
         session_id=getattr(parsed, "session_id", None),
         claim_id=getattr(parsed, "claim_id", None),
         status=getattr(parsed, "status", None),
+        task_kind=getattr(parsed, "task_kind", None),
+        tool_name=getattr(parsed, "tool_name", None),
+        workflow_name=getattr(parsed, "workflow_name", None),
+        tag=getattr(parsed, "tag", None),
     )
     if parsed.json:
         print(json.dumps(summary.to_dict(), sort_keys=True))
@@ -3864,6 +3884,7 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         SCHEMA_VERSION,
         add_tool_note,
         build_tool_note,
+        filter_tool_notes,
         read_tool_notes,
         render_tool_notes_text,
     )
@@ -3890,10 +3911,29 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         print(note.note_id)
         return 0
     if sub == "list":
-        notes = read_tool_notes(store)
+        task_kind = getattr(parsed, "task_kind", None)
+        tool_name = getattr(parsed, "tool_name", None)
+        workflow_name = getattr(parsed, "workflow_name", None)
+        tag = getattr(parsed, "tag", None)
+        notes = filter_tool_notes(
+            read_tool_notes(store),
+            task_kind=task_kind,
+            tool_name=tool_name,
+            workflow_name=workflow_name,
+            tag=tag,
+        )
         if getattr(parsed, "json", False):
             print(json.dumps(
-                {"schema_version": SCHEMA_VERSION, "tool_notes": [n.to_dict() for n in notes]},
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "filters": {
+                        "task_kind": task_kind,
+                        "tool_name": tool_name,
+                        "workflow_name": workflow_name,
+                        "tag": tag,
+                    },
+                    "tool_notes": [n.to_dict() for n in notes],
+                },
                 sort_keys=True,
             ))
         else:
