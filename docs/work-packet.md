@@ -95,3 +95,58 @@ The Work Packet is advisory and local. It is **not** a correctness, safety, appr
 production-readiness signal, and not a form of verification. Building it does **not** save tool
 notes, run tools, spawn agents, launch workflows, score, route, rank, fuzzy/semantic match, or
 sync anywhere — everything stays in the local `.chimera-memory/` store and reads change nothing.
+
+## Portable bundles and diff
+
+A **bundle** is a small directory you can attach to a PR, handoff, or review thread, and a
+**diff** is a read-only comparison of two bundles (or two `work-packet.json` files).
+
+### Bundle export
+
+```bash
+chimera-memory work-packet bundle --output-dir packet-a
+chimera-memory work-packet bundle --output-dir packet-a --task-kind large-repo-forensics --tag repo-forensics
+chimera-memory work-packet bundle --output-dir packet-a --claim CLAIM_ID
+```
+
+The bundle directory contains four files:
+
+- `WORK_PACKET.md` — the human-readable packet.
+- `work-packet.json` — the machine-readable packet.
+- `manifest.json` — the bundle manifest (see below).
+- `README.md` — a short description of the bundle.
+
+Writing rules: the export writes only into the output directory and never touches the memory
+store; the parent directory must already exist (otherwise a clean error); an existing **non-empty**
+output directory is refused unless `--force` is given (an existing empty directory is allowed).
+With `--force`, the four bundle files are overwritten.
+
+`manifest.json` carries `schema_version`, `artifact: "chimera_work_packet_bundle"`, `generated_at`,
+the same `advisory`, the applied `filters`, the `packet_summary` counts, and a `files` list — each
+entry a `path` / `sha256` / `bytes` for `WORK_PACKET.md`, `work-packet.json`, and `README.md`
+(the manifest does not hash itself).
+
+### Inspect
+
+```bash
+chimera-memory work-packet inspect packet-a
+chimera-memory work-packet inspect packet-a --json
+```
+
+`inspect` reads `manifest.json` and verifies each listed file exists and its `sha256` and byte
+count match. It reports per-file results and any errors, mutating nothing. The command exits
+non-zero when the bundle is invalid (missing or corrupt files).
+
+### Diff
+
+```bash
+chimera-memory work-packet diff packet-a packet-b
+chimera-memory work-packet diff packet-a packet-b --json
+chimera-memory work-packet diff packet-a/work-packet.json packet-b/work-packet.json
+```
+
+`OLD` and `NEW` may each be a bundle directory or a `work-packet.json` file. The diff is a local
+packet comparison: `summary_delta` counts, `claims` added/removed/status_changed, `tool_notes`
+added/removed (by `note_id`), and `candidate_tool_lessons` added/removed (by `candidate_id`). It
+is read-only and deterministic — not a correctness, safety, approval, merge, or
+production-readiness signal.

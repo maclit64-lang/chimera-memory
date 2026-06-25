@@ -700,6 +700,51 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output", dest="output", help="Write the packet to this file (parent must exist)."
     )
     work_packet_parser.add_argument("--memory-dir")
+    wp_sub = work_packet_parser.add_subparsers(dest="work_packet_command")
+
+    wp_bundle = wp_sub.add_parser(
+        "bundle",
+        help="Write a portable packet bundle (WORK_PACKET.md/json/manifest/README) to a dir.",
+    )
+    wp_bundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the bundle into (parent must exist).",
+    )
+    wp_bundle.add_argument(
+        "--force", action="store_true",
+        help="Overwrite bundle files in a non-empty output directory.",
+    )
+    wp_bundle.add_argument("--claim", dest="claim_id", help="Filter to this claim id")
+    wp_bundle.add_argument("--session", dest="session_id", help="Filter to this session id")
+    wp_bundle.add_argument("--status", help="Filter claims by exact latest_status")
+    wp_bundle.add_argument(
+        "--task-kind", dest="task_kind", help="Filter tool notes and candidates by task_kind"
+    )
+    wp_bundle.add_argument(
+        "--tag", dest="tag", help="Filter tool notes and candidates by exact tag"
+    )
+    wp_bundle.add_argument(
+        "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
+    )
+    wp_bundle.add_argument(
+        "--limit-candidates", dest="limit_candidates", type=int,
+        help="Max candidate lessons (>=0).",
+    )
+    wp_bundle.add_argument("--memory-dir")
+
+    wp_inspect = wp_sub.add_parser(
+        "inspect", help="Verify a packet bundle manifest (file existence + sha256 + bytes)."
+    )
+    wp_inspect.add_argument("bundle_dir", help="Bundle directory containing manifest.json")
+    wp_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    wp_diff = wp_sub.add_parser(
+        "diff", help="Compare two packets (bundle dirs or work-packet.json files). Read-only."
+    )
+    wp_diff.add_argument("old", help="OLD bundle directory or work-packet.json file")
+    wp_diff.add_argument("new", help="NEW bundle directory or work-packet.json file")
+    wp_diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    wp_diff.add_argument("--markdown", action="store_true", help="Emit markdown (default view)")
     work_packet_parser.set_defaults(command="work-packet")
 
     tool_notes_parser = subparsers.add_parser(
@@ -4093,6 +4138,14 @@ def _work_packet(parsed: argparse.Namespace) -> int:
     only the explicitly requested file. Not a correctness, safety, approval,
     merge, or production-readiness signal.
     """
+    wpc = getattr(parsed, "work_packet_command", None)
+    if wpc == "bundle":
+        return _work_packet_bundle(parsed)
+    if wpc == "inspect":
+        return _work_packet_inspect(parsed)
+    if wpc == "diff":
+        return _work_packet_diff(parsed)
+
     from datetime import UTC, datetime
 
     from chimera_memory.work_packet import build_work_packet, render_work_packet_markdown
@@ -4133,6 +4186,85 @@ def _work_packet(parsed: argparse.Namespace) -> int:
         print(f"Work packet written to {output}")
         return 0
     print(content)
+    return 0
+
+
+def _work_packet_bundle(parsed: argparse.Namespace) -> int:
+    """Write a portable packet bundle to an explicit directory. Read-only on the store."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.work_packet import (
+        BundleError,
+        build_work_packet,
+        write_work_packet_bundle,
+    )
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    packet = build_work_packet(
+        store,
+        generated_at=datetime.now(UTC).isoformat(),
+        claim_id=getattr(parsed, "claim_id", None),
+        session_id=getattr(parsed, "session_id", None),
+        status=getattr(parsed, "status", None),
+        task_kind=getattr(parsed, "task_kind", None),
+        tag=getattr(parsed, "tag", None),
+        limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
+        limit_candidates=getattr(parsed, "limit_candidates", None),
+    )
+    try:
+        store_label = str(store.memory_dir.relative_to(Path.cwd()))
+    except ValueError:
+        store_label = store.memory_dir.name
+    output_dir = Path(parsed.bundle_output_dir)
+    try:
+        manifest = write_work_packet_bundle(
+            packet, output_dir=output_dir, store_label=store_label,
+            force=getattr(parsed, "force", False),
+        )
+    except BundleError as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+    names = ", ".join(f["path"] for f in manifest["files"]) + ", manifest.json"
+    print(f"Work packet bundle written to {output_dir} (4 files: {names})")
+    return 0
+
+
+def _work_packet_inspect(parsed: argparse.Namespace) -> int:
+    """Verify a packet bundle manifest (existence + sha256 + bytes). Read-only."""
+    from chimera_memory.work_packet import inspect_bundle, render_inspect_text
+
+    result = inspect_bundle(Path(parsed.bundle_dir))
+    if getattr(parsed, "json", False):
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(render_inspect_text(result))
+    return 0 if result["valid"] else 1
+
+
+def _work_packet_diff(parsed: argparse.Namespace) -> int:
+    """Compare two packets (bundle dirs or work-packet.json files). Read-only."""
+    from chimera_memory.work_packet import diff_packets, load_packet_dict, render_diff_markdown
+
+    old_path = Path(parsed.old)
+    new_path = Path(parsed.new)
+    try:
+        old_packet = load_packet_dict(old_path)
+        new_packet = load_packet_dict(new_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+    diff = diff_packets(
+        old_packet, new_packet, old_path=str(old_path), new_path=str(new_path)
+    )
+    if getattr(parsed, "json", False):
+        print(json.dumps(diff, sort_keys=True))
+    else:
+        print(render_diff_markdown(diff))
     return 0
 
 

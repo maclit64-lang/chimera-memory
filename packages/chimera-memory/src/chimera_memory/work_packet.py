@@ -17,7 +17,10 @@ existing projection layers (no duplicated business logic).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from chimera_memory.handoff import (
@@ -267,4 +270,275 @@ def render_work_packet_markdown(packet: WorkPacket, *, store_label: str) -> str:
     lines.append("")
     lines.append("## Preflight advisory")
     lines.append(f"- {PREFLIGHT_POINTER}")
+    return "\n".join(lines)
+
+
+# ── v1: portable bundle + inspect + diff ─────────────────────────────────────
+
+BUNDLE_ARTIFACT = "chimera_work_packet_bundle"
+INSPECTION_ARTIFACT = "chimera_work_packet_bundle_inspection"
+DIFF_ARTIFACT = "chimera_work_packet_diff"
+
+_BUNDLE_MD = "WORK_PACKET.md"
+_BUNDLE_JSON = "work-packet.json"
+_BUNDLE_README = "README.md"
+_BUNDLE_MANIFEST = "manifest.json"
+# Content files hashed into the manifest (manifest.json cannot hash itself).
+_BUNDLE_CONTENT_FILES = (_BUNDLE_MD, _BUNDLE_JSON, _BUNDLE_README)
+
+_README_TEXT = (
+    "# Chimera Work Packet bundle\n\n"
+    "A portable, local, advisory review packet:\n\n"
+    f"- `{_BUNDLE_MD}` — the human-readable packet.\n"
+    f"- `{_BUNDLE_JSON}` — the machine-readable packet.\n"
+    f"- `{_BUNDLE_MANIFEST}` — the bundle manifest (file list + sha256 + byte counts).\n"
+    f"- `{_BUNDLE_README}` — this file.\n\n"
+    "Inspect it with `chimera-memory work-packet inspect <dir>` and compare two bundles "
+    "with `chimera-memory work-packet diff <old> <new>`.\n\n"
+    "Advisory only — a local evidence and operational memory summary; not a correctness, "
+    "safety, approval, merge, or production-readiness signal.\n"
+)
+
+
+class BundleError(Exception):
+    """Raised for bundle-write precondition failures (clean CLI errors)."""
+
+
+def _hashed_entry(name: str, data: bytes) -> dict[str, Any]:
+    return {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+
+def write_work_packet_bundle(
+    packet: WorkPacket,
+    *,
+    output_dir: Path,
+    store_label: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write a portable bundle (4 files) and return the manifest dict.
+
+    Writes only into ``output_dir``; never touches the memory store. The parent
+    of ``output_dir`` must already exist. An existing non-empty ``output_dir`` is
+    refused unless ``force`` is set (then the bundle files are overwritten).
+    """
+    if output_dir.exists() and output_dir.is_file():
+        raise BundleError(f"output path is a file, not a directory: {output_dir}")
+    if not output_dir.parent.exists():
+        raise BundleError(f"parent directory does not exist: {output_dir.parent}")
+    if output_dir.exists():
+        existing = [p.name for p in output_dir.iterdir()]
+        if existing and not force:
+            raise BundleError(
+                f"output directory is not empty: {output_dir} (use --force to overwrite)"
+            )
+    else:
+        output_dir.mkdir()
+
+    rendered = {
+        _BUNDLE_MD: render_work_packet_markdown(packet, store_label=store_label) + "\n",
+        _BUNDLE_JSON: json.dumps(packet.to_dict(), sort_keys=True, indent=2) + "\n",
+        _BUNDLE_README: _README_TEXT,
+    }
+    file_entries: list[dict[str, Any]] = []
+    for name in _BUNDLE_CONTENT_FILES:
+        data = rendered[name].encode("utf-8")
+        (output_dir / name).write_bytes(data)
+        file_entries.append(_hashed_entry(name, data))
+
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact": BUNDLE_ARTIFACT,
+        "generated_at": packet.generated_at,
+        "advisory": packet.advisory,
+        "filters": packet.filters.to_dict(),
+        "packet_summary": packet.summary.to_dict(),
+        "files": file_entries,
+    }
+    (output_dir / _BUNDLE_MANIFEST).write_bytes(
+        (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    )
+    return manifest
+
+
+def inspect_bundle(bundle_dir: Path) -> dict[str, Any]:
+    """Read a bundle manifest and verify each listed file. Read-only."""
+    errors: list[str] = []
+    manifest_path = bundle_dir / _BUNDLE_MANIFEST
+    if not manifest_path.exists():
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "artifact": INSPECTION_ARTIFACT,
+            "valid": False,
+            "bundle": {"path": str(bundle_dir), "manifest": None},
+            "files": [],
+            "errors": [f"{_BUNDLE_MANIFEST} not found"],
+        }
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "artifact": INSPECTION_ARTIFACT,
+            "valid": False,
+            "bundle": {"path": str(bundle_dir), "manifest": None},
+            "files": [],
+            "errors": [f"{_BUNDLE_MANIFEST} is unreadable: {exc}"],
+        }
+
+    file_results: list[dict[str, Any]] = []
+    for entry in manifest.get("files", []):
+        name = entry.get("path", "")
+        fp = bundle_dir / name
+        exists = fp.exists()
+        sha_ok = False
+        bytes_ok = False
+        if exists:
+            data = fp.read_bytes()
+            sha_ok = hashlib.sha256(data).hexdigest() == entry.get("sha256")
+            bytes_ok = len(data) == entry.get("bytes")
+            if not sha_ok:
+                errors.append(f"sha256 mismatch: {name}")
+            if not bytes_ok:
+                errors.append(f"bytes mismatch: {name}")
+        else:
+            errors.append(f"missing file: {name}")
+        file_results.append({
+            "path": name,
+            "exists": exists,
+            "sha256_matches": sha_ok,
+            "bytes_matches": bytes_ok,
+        })
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact": INSPECTION_ARTIFACT,
+        "valid": not errors,
+        "bundle": {"path": str(bundle_dir), "manifest": manifest},
+        "files": file_results,
+        "errors": errors,
+    }
+
+
+def render_inspect_text(result: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Chimera Work Packet bundle inspection")
+    lines.append("")
+    lines.append("Advisory only. Local bundle integrity check (file hashes/sizes).")
+    lines.append("")
+    lines.append(f"- bundle: {result['bundle']['path']}")
+    lines.append(f"- valid: {result['valid']}")
+    for f in result["files"]:
+        lines.append(
+            f"- {f['path']}: exists={f['exists']} sha256_matches={f['sha256_matches']} "
+            f"bytes_matches={f['bytes_matches']}"
+        )
+    if result["errors"]:
+        lines.append("- errors:")
+        for e in result["errors"]:
+            lines.append(f"  - {e}")
+    return "\n".join(lines)
+
+
+def load_packet_dict(path: Path) -> dict[str, Any]:
+    """Load a packet dict from a bundle directory or a work-packet.json file."""
+    target = path / _BUNDLE_JSON if path.is_dir() else path
+    return json.loads(target.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+
+def diff_packets(
+    old: dict[str, Any],
+    new: dict[str, Any],
+    *,
+    old_path: str,
+    new_path: str,
+) -> dict[str, Any]:
+    """Compute a read-only, deterministic diff between two work packets."""
+    old_summary = old.get("summary", {})
+    new_summary = new.get("summary", {})
+    summary_delta = {
+        k: int(new_summary.get(k, 0)) - int(old_summary.get(k, 0))
+        for k in sorted(set(old_summary) | set(new_summary))
+    }
+
+    old_claims = {c["claim_id"]: c.get("latest_status") for c in old.get("claims", [])}
+    new_claims = {c["claim_id"]: c.get("latest_status") for c in new.get("claims", [])}
+    status_changed = [
+        {"claim_id": cid, "old_status": old_claims[cid], "new_status": new_claims[cid]}
+        for cid in sorted(set(old_claims) & set(new_claims))
+        if old_claims[cid] != new_claims[cid]
+    ]
+
+    def _ids(packet: dict[str, Any], key: str, id_field: str) -> set[str]:
+        return {item[id_field] for item in packet.get(key, [])}
+
+    old_notes = _ids(old, "tool_notes", "note_id")
+    new_notes = _ids(new, "tool_notes", "note_id")
+    old_cands = _ids(old, "candidate_tool_lessons", "candidate_id")
+    new_cands = _ids(new, "candidate_tool_lessons", "candidate_id")
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact": DIFF_ARTIFACT,
+        "old": {"path": old_path, "artifact": old.get("artifact")},
+        "new": {"path": new_path, "artifact": new.get("artifact")},
+        "summary_delta": summary_delta,
+        "claims": {
+            "added": sorted(set(new_claims) - set(old_claims)),
+            "removed": sorted(set(old_claims) - set(new_claims)),
+            "status_changed": status_changed,
+        },
+        "tool_notes": {
+            "added": sorted(new_notes - old_notes),
+            "removed": sorted(old_notes - new_notes),
+        },
+        "candidate_tool_lessons": {
+            "added": sorted(new_cands - old_cands),
+            "removed": sorted(old_cands - new_cands),
+        },
+    }
+
+
+def _delta(value: int) -> str:
+    return f"+{value}" if value > 0 else str(value)
+
+
+def render_diff_markdown(diff: dict[str, Any]) -> str:
+    s = diff["summary_delta"]
+    lines: list[str] = []
+    lines.append("# Chimera Work Packet Diff")
+    lines.append("")
+    lines.append(
+        "Advisory only. Local packet comparison; not a correctness, safety, approval, "
+        "merge, or production-readiness signal."
+    )
+    lines.append("")
+    lines.append(f"- old: {diff['old']['path']}")
+    lines.append(f"- new: {diff['new']['path']}")
+    lines.append("")
+    lines.append("Summary deltas:")
+    lines.append(f"- claims shown: {_delta(s.get('shown_claim_count', 0))}")
+    lines.append(f"- settled claims: {_delta(s.get('settled_claim_count', 0))}")
+    lines.append(f"- unresolved: {_delta(s.get('open_or_unresolved_count', 0))}")
+    lines.append(f"- next inspection targets: {_delta(s.get('next_inspection_target_count', 0))}")
+    lines.append(f"- tool lessons: {_delta(s.get('tool_note_count', 0))}")
+    lines.append(f"- candidate lessons: {_delta(s.get('candidate_count', 0))}")
+    lines.append("")
+    claims = diff["claims"]
+    lines.append("Claims:")
+    lines.append(f"- added: {', '.join(claims['added']) or '(none)'}")
+    lines.append(f"- removed: {', '.join(claims['removed']) or '(none)'}")
+    if claims["status_changed"]:
+        lines.append("- status changed:")
+        for ch in claims["status_changed"]:
+            lines.append(f"  - {ch['claim_id']}: {ch['old_status']} -> {ch['new_status']}")
+    else:
+        lines.append("- status changed: (none)")
+    lines.append("")
+    lines.append("Tool lessons:")
+    lines.append(f"- added: {', '.join(diff['tool_notes']['added']) or '(none)'}")
+    lines.append(f"- removed: {', '.join(diff['tool_notes']['removed']) or '(none)'}")
+    lines.append("")
+    lines.append("Candidate tool lessons:")
+    lines.append(f"- added: {', '.join(diff['candidate_tool_lessons']['added']) or '(none)'}")
+    lines.append(f"- removed: {', '.join(diff['candidate_tool_lessons']['removed']) or '(none)'}")
     return "\n".join(lines)
