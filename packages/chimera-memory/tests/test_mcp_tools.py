@@ -486,3 +486,99 @@ def test_tool_notes_suggest_no_forbidden_phrases(tmp_path: Path) -> None:
     blob = (t["description"] + json.dumps(r)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── Stage 6: write-gated tool-note add ───────────────────────────────────────
+
+def test_tool_note_add_is_write_classified() -> None:
+    ro_names = {t["name"] for t in list_tools(_ro())}
+    rw_names = {t["name"] for t in list_tools(_rw())}
+    assert "chimera_tool_note_add" not in ro_names   # hidden under read-only
+    assert "chimera_tool_note_add" in rw_names        # visible with --allow-write
+    t = next(t for t in list_tools(_rw()) if t["name"] == "chimera_tool_note_add")
+    assert t["inputSchema"]["required"] == ["task_kind", "tool_name", "lesson"]
+    assert "_permission" not in t
+
+
+def test_tool_note_add_blocked_under_read_only(tmp_path: Path) -> None:
+    err = call_tool("chimera_tool_note_add",
+                    {"task_kind": "k", "tool_name": "t", "lesson": "l"},
+                    perms=_ro(), root=tmp_path)
+    assert "error" in err and "allow-write" in err["error"]
+    assert not (tmp_path / ".chimera-memory").exists()  # blocked before any write
+
+
+def test_tool_note_add_with_write_adds_note(tmp_path: Path) -> None:
+    res = call_tool("chimera_tool_note_add", {
+        "task_kind": "large-repo-forensics", "tool_name": "parallel-agents",
+        "workflow_name": "unit-card-specialist-fanout", "lesson": "Use manifests first.",
+        "tags": ["repo-forensics", "orchestration"],
+    }, perms=_rw(), root=tmp_path)
+    assert set(res) == {"schema_version", "tool_note", "written_to"}
+    assert res["written_to"] == "tool_notes.jsonl"
+    assert res["tool_note"]["note_id"].startswith("tn_")
+    assert res["tool_note"]["tags"] == ["repo-forensics", "orchestration"]  # round-trip
+
+
+def test_added_note_visible_via_suggest(tmp_path: Path) -> None:
+    call_tool("chimera_tool_note_add", {"task_kind": "k", "tool_name": "t", "lesson": "l"},
+              perms=_rw(), root=tmp_path)
+    sg = call_tool("chimera_tool_notes_suggest", {"task_kind": "k"}, perms=_ro(), root=tmp_path)
+    assert len(sg["suggestions"]) == 1
+
+
+def test_added_note_visible_via_cli_list(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    call_tool("chimera_tool_note_add", {"task_kind": "k", "tool_name": "t", "lesson": "l"},
+              perms=_rw(), root=tmp_path)
+    code = main(["tool-notes", "list", "--json", "--memory-dir", str(tmp_path / ".chimera-memory")])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert len(json.loads(out)["tool_notes"]) == 1
+
+
+def test_tool_note_add_rejects_missing_required(tmp_path: Path) -> None:
+    for args in (
+        {"tool_name": "t", "lesson": "l"},      # no task_kind
+        {"task_kind": "k", "lesson": "l"},       # no tool_name
+        {"task_kind": "k", "tool_name": "t"},    # no lesson
+    ):
+        r = call_tool("chimera_tool_note_add", args, perms=_rw(), root=tmp_path)
+        assert "error" in r and "missing required" in r["error"]
+    assert not (tmp_path / ".chimera-memory").exists()  # invalid input never writes
+
+
+def test_tool_note_add_writes_only_tool_notes_file(tmp_path: Path) -> None:
+    call_tool("chimera_tool_note_add", {"task_kind": "k", "tool_name": "t", "lesson": "l"},
+              perms=_rw(), root=tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    files = sorted(p.name for p in mem.iterdir() if p.is_file())
+    assert files == ["tool_notes.jsonl"]
+    for ledger in ("claims.jsonl", "outcomes.jsonl", "scores.jsonl",
+                   "sessions.jsonl", "integrity.jsonl", "index.sqlite"):
+        assert not (mem / ledger).exists()
+
+
+def test_suggest_stays_read_only_alongside_write_tool(tmp_path: Path) -> None:
+    r = call_tool("chimera_tool_notes_suggest", {}, perms=_ro(), root=tmp_path)
+    assert "error" not in r
+    assert "chimera_tool_notes_suggest" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_existing_write_execute_gating_unchanged_stage6() -> None:
+    ro_names = {t["name"] for t in list_tools(_ro())}
+    assert "chimera_claim_lock_auto" not in ro_names
+    assert "chimera_xray_generate" not in ro_names
+    assert "chimera_claim_settle" not in ro_names
+    # write alone must not expose execute tools
+    rw_names = {t["name"] for t in list_tools(_rw())}
+    assert "chimera_claim_settle" not in rw_names
+
+
+def test_tool_note_add_no_forbidden_phrases(tmp_path: Path) -> None:
+    t = next(t for t in list_tools(_rw()) if t["name"] == "chimera_tool_note_add")
+    res = call_tool("chimera_tool_note_add",
+                    {"task_kind": "k", "tool_name": "t", "lesson": "l", "tags": ["x"]},
+                    perms=_rw(), root=tmp_path)
+    blob = (t["description"] + json.dumps(res)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"

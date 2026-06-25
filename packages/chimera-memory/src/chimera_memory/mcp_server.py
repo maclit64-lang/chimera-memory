@@ -236,6 +236,42 @@ _TOOLS = [
         required=[],
         permission="read",
     ),
+    _tool(
+        name="chimera_tool_note_add",
+        description=(
+            "Records a local advisory operational note (agent skill memory) about a "
+            "tool or workflow that helped. Requires --allow-write. Append-only to "
+            "tool_notes.jsonl; does not touch the claims/outcomes/scores/sessions "
+            "ledger. The supplied note is stored as-is — it is not judged true or "
+            "validated, and is not a correctness, safety, approval, merge, "
+            "production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to write (default: server root).",
+                "default": ".",
+            },
+            "task_kind": {"type": "string", "description": "Task kind this lesson applies to."},
+            "tool_name": {"type": "string", "description": "Tool the lesson is about."},
+            "lesson": {"type": "string", "description": "The operational lesson (what to do)."},
+            "workflow_name": {"type": "string", "description": "Workflow name (optional)."},
+            "evidence": {"type": "string", "description": "Supporting evidence text (optional)."},
+            "caveat": {"type": "string", "description": "Caveats / costs / failures (optional)."},
+            "source": {
+                "type": "string",
+                "description": "Provenance label (default: manual).",
+                "default": "manual",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags.",
+            },
+        },
+        required=["task_kind", "tool_name", "lesson"],
+        permission="write",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -468,6 +504,54 @@ def _tool_tool_notes_suggest(args: dict[str, Any], *, root: Path) -> dict[str, A
     }
 
 
+def _tool_tool_note_add(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Write-gated: append one user/agent-supplied tool note. Requires allow_write.
+
+    Validates the required fields, then appends to tool_notes.jsonl only. Does not
+    touch the claims/outcomes/scores/sessions ledger. The note is stored as-is —
+    it is not judged true or validated.
+    """
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_notes import add_tool_note, build_tool_note
+
+    task_kind = args.get("task_kind")
+    tool_name = args.get("tool_name")
+    lesson = args.get("lesson")
+    missing = [
+        field
+        for field, value in (("task_kind", task_kind), ("tool_name", tool_name), ("lesson", lesson))
+        if not value
+    ]
+    if missing:
+        return {"error": f"missing required field(s): {', '.join(missing)}"}
+
+    raw_tags = args.get("tags")
+    tags = (
+        tuple(str(t) for t in raw_tags if isinstance(t, str))
+        if isinstance(raw_tags, list)
+        else ()
+    )
+    arg_root = args.get("root")
+    store_root = Path(arg_root) if arg_root else root
+    store = MemoryStore.from_paths(root=store_root)
+    note = build_tool_note(
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=args.get("workflow_name"),
+        lesson=lesson,
+        evidence=args.get("evidence"),
+        caveat=args.get("caveat"),
+        source=args.get("source") or "manual",
+        tags=tags,
+    )
+    add_tool_note(store, note)
+    return {
+        "schema_version": 1,
+        "tool_note": note.to_dict(),
+        "written_to": "tool_notes.jsonl",
+    }
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -476,6 +560,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_settle": lambda a, *, root, perms: _tool_settle(a, root=root),
     "chimera_xray_generate": lambda a, *, root, perms: _tool_xray(a, root=root),
     "chimera_tool_notes_suggest": lambda a, *, root, perms: _tool_tool_notes_suggest(a, root=root),
+    "chimera_tool_note_add": lambda a, *, root, perms: _tool_tool_note_add(a, root=root),
 }
 
 
