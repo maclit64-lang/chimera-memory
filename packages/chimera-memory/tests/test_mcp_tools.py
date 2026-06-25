@@ -582,3 +582,34 @@ def test_tool_note_add_no_forbidden_phrases(tmp_path: Path) -> None:
     blob = (t["description"] + json.dumps(res)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── v1 closeout: MCP show + suggest limit ────────────────────────────────────
+
+def test_tool_note_show_listed_read_only() -> None:
+    assert "chimera_tool_note_show" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_show_found_and_missing(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    note = build_tool_note(task_kind="k", tool_name="t", workflow_name="w", lesson="l")
+    add_tool_note(store, note)
+    found = call_tool("chimera_tool_note_show", {"note_id": note.note_id}, perms=_ro(), root=tmp_path)
+    assert found["found"] is True
+    assert found["tool_note"]["note_id"] == note.note_id
+    missing = call_tool("chimera_tool_note_show", {"note_id": "tn_nope"}, perms=_ro(), root=tmp_path)
+    assert missing == {"schema_version": 1, "tool_note": None, "found": False}
+
+
+def test_mcp_show_does_not_create_store(tmp_path: Path) -> None:
+    r = call_tool("chimera_tool_note_show", {"note_id": "tn_x"}, perms=_ro(), root=tmp_path)
+    assert r["found"] is False
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_suggest_limit(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)  # two notes
+    r = call_tool("chimera_tool_notes_suggest", {"limit": 1}, perms=_ro(), root=tmp_path)
+    assert len(r["suggestions"]) == 1
+    r0 = call_tool("chimera_tool_notes_suggest", {"limit": 0}, perms=_ro(), root=tmp_path)
+    assert r0["suggestions"] == []

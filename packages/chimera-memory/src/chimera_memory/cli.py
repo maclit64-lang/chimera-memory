@@ -642,6 +642,10 @@ def _build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument(
         "--tag", dest="tag", help="Filter tool lessons by exact tag"
     )
+    handoff_parser.add_argument(
+        "--limit-tool-notes", dest="tool_note_limit", type=int,
+        help="Max tool lessons to include (>=0).",
+    )
     handoff_parser.add_argument("--memory-dir")
     handoff_parser.set_defaults(command="handoff")
 
@@ -666,6 +670,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tn_list.add_argument("--tool", dest="tool_name", help="Exact tool_name filter")
     tn_list.add_argument("--workflow", dest="workflow_name", help="Exact workflow_name filter")
     tn_list.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
+    tn_list.add_argument("--limit", dest="tn_limit", type=int, help="Max notes to return (>=0).")
     tn_list.add_argument("--memory-dir")
     tn_suggest = tool_notes_sub.add_parser(
         "suggest",
@@ -676,7 +681,12 @@ def _build_parser() -> argparse.ArgumentParser:
     tn_suggest.add_argument("--tool", dest="tool_name", help="Exact tool_name match")
     tn_suggest.add_argument("--workflow", dest="workflow_name", help="Exact workflow_name match")
     tn_suggest.add_argument("--tag", dest="tag", help="Exact tag match (membership)")
+    tn_suggest.add_argument("--limit", dest="tn_limit", type=int, help="Max notes to return (>=0).")
     tn_suggest.add_argument("--memory-dir")
+    tn_show = tool_notes_sub.add_parser("show", help="Show one tool note by exact note_id")
+    tn_show.add_argument("note_id", help="Exact note id (tn_...)")
+    tn_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    tn_show.add_argument("--memory-dir")
     tool_notes_parser.set_defaults(command="tool-notes")
 
     failures_parser = subparsers.add_parser(
@@ -3924,6 +3934,7 @@ def _handoff(parsed: argparse.Namespace) -> int:
         tool_name=getattr(parsed, "tool_name", None),
         workflow_name=getattr(parsed, "workflow_name", None),
         tag=getattr(parsed, "tag", None),
+        tool_note_limit=getattr(parsed, "tool_note_limit", None),
     )
     if parsed.json:
         print(json.dumps(summary.to_dict(), sort_keys=True))
@@ -3949,6 +3960,7 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         add_tool_note,
         build_tool_note,
         filter_tool_notes,
+        find_tool_note,
         read_tool_notes,
         render_suggestions_text,
         render_tool_notes_text,
@@ -3987,6 +3999,9 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
             workflow_name=workflow_name,
             tag=tag,
         )
+        tn_limit = getattr(parsed, "tn_limit", None)
+        if tn_limit is not None:
+            notes = notes[: max(tn_limit, 0)]
         if getattr(parsed, "json", False):
             print(json.dumps(
                 {
@@ -4016,6 +4031,9 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
             workflow_name=workflow_name,
             tag=tag,
         )
+        tn_limit = getattr(parsed, "tn_limit", None)
+        if tn_limit is not None:
+            matches = matches[: max(tn_limit, 0)]
         if getattr(parsed, "json", False):
             print(json.dumps(
                 {
@@ -4033,7 +4051,23 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         else:
             print(render_suggestions_text(matches))
         return 0
-    print("usage: chimera-memory tool-notes {add,list,suggest}", file=__import__("sys").stderr)
+    if sub == "show":
+        shown = find_tool_note(store, parsed.note_id)
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "tool_note": shown.to_dict() if shown else None,
+                    "found": shown is not None,
+                },
+                sort_keys=True,
+            ))
+        elif shown is None:
+            print(f"No tool note with id {parsed.note_id!r}.")
+        else:
+            print(render_tool_notes_text([shown]))
+        return 0
+    print("usage: chimera-memory tool-notes {add,list,suggest,show}", file=__import__("sys").stderr)
     return 2
 
 

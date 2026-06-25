@@ -159,6 +159,7 @@ def build_handoff(
     tool_name: str | None = None,
     workflow_name: str | None = None,
     tag: str | None = None,
+    tool_note_limit: int | None = None,
 ) -> HandoffSummary:
     """Build a HandoffSummary from the local ledger. Read-only.
 
@@ -219,6 +220,16 @@ def build_handoff(
         key=lambda t: (_REASON_PRIORITY.get(t.reason, 99), t.claim_id),
     )
 
+    matched_notes = filter_tool_notes(
+        read_tool_notes(store),
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=workflow_name,
+        tag=tag,
+    )
+    if tool_note_limit is not None:
+        matched_notes = matched_notes[: max(tool_note_limit, 0)]
+
     return HandoffSummary(
         schema_version=SCHEMA_VERSION,
         advisory=ADVISORY,
@@ -236,13 +247,7 @@ def build_handoff(
         claims=claims,
         open_or_unresolved=tuple(open_items),
         next_inspection_targets=tuple(targets),
-        tool_notes=tuple(filter_tool_notes(
-            read_tool_notes(store),
-            task_kind=task_kind,
-            tool_name=tool_name,
-            workflow_name=workflow_name,
-            tag=tag,
-        )),
+        tool_notes=tuple(matched_notes),
     )
 
 
@@ -256,6 +261,7 @@ def handoff_for_root(
     tool_name: str | None = None,
     workflow_name: str | None = None,
     tag: str | None = None,
+    tool_note_limit: int | None = None,
 ) -> HandoffSummary:
     """Convenience wrapper: build a handoff for a repo root's ``.chimera-memory``."""
     return build_handoff(
@@ -267,6 +273,7 @@ def handoff_for_root(
         tool_name=tool_name,
         workflow_name=workflow_name,
         tag=tag,
+        tool_note_limit=tool_note_limit,
     )
 
 

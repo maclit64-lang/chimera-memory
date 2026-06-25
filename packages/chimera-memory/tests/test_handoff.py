@@ -422,3 +422,17 @@ def test_cli_handoff_tool_note_filter_json(tmp_path: Path, capsys: pytest.Captur
     }
     assert data["filters"]["task_kind"] == "A"
     assert len(data["tool_notes"]) == 1
+
+
+# --- v1 closeout: handoff tool-note limit -----------------------------------
+
+def test_handoff_limit_tool_notes(tmp_path: Path) -> None:
+    _seed(tmp_path)  # claims c1, c2
+    store = MemoryStore.from_paths(root=tmp_path)
+    for tool in ("t1", "t2", "t3"):
+        add_tool_note(store, build_tool_note(task_kind="A", tool_name=tool, workflow_name="w"))
+    assert len(handoff_for_root(tmp_path, task_kind="A").tool_notes) == 3
+    assert len(handoff_for_root(tmp_path, task_kind="A", tool_note_limit=2).tool_notes) == 2
+    assert handoff_for_root(tmp_path, task_kind="A", tool_note_limit=0).tool_notes == ()
+    # limit does not disturb the claim view
+    assert handoff_for_root(tmp_path, task_kind="A", tool_note_limit=1).settled_claim_count == 2

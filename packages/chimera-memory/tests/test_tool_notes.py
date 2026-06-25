@@ -317,3 +317,66 @@ def test_suggest_no_forbidden_phrases(tmp_path: Path, capsys: pytest.CaptureFixt
     low = blob.lower()
     for phrase in _FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# --- v1 closeout: show + limit + docs ---------------------------------------
+
+def test_cli_show_found_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    note = build_tool_note(task_kind="k", tool_name="t", workflow_name="w", lesson="l", tags=("x",))
+    add_tool_note(store, note)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "tool-notes", "show", note.note_id, "--json", "--memory-dir", str(mem))
+    assert code == 0
+    d = json.loads(out)
+    assert d["found"] is True
+    assert d["schema_version"] == 1
+    assert d["tool_note"]["note_id"] == note.note_id
+    assert set(d["tool_note"]) == _NOTE_KEYS
+
+
+def test_cli_show_missing_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = tmp_path / ".chimera-memory"
+    mem.mkdir()
+    code, out = _run(capsys, "tool-notes", "show", "tn_nope", "--json", "--memory-dir", str(mem))
+    assert code == 0
+    assert json.loads(out) == {"schema_version": 1, "tool_note": None, "found": False}
+
+
+def test_cli_show_missing_text(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = tmp_path / ".chimera-memory"
+    mem.mkdir()
+    code, out = _run(capsys, "tool-notes", "show", "tn_nope", "--memory-dir", str(mem))
+    assert code == 0
+    assert "no tool note with id" in out.lower()
+
+
+def test_cli_list_limit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+
+    def count(*args: str) -> int:
+        _, out = _run(capsys, "tool-notes", "list", "--json", *args, "--memory-dir", str(mem))
+        return len(json.loads(out)["tool_notes"])
+
+    assert count() == 2
+    assert count("--limit", "1") == 1
+    assert count("--limit", "0") == 0
+
+
+def test_cli_suggest_limit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    mem = tmp_path / ".chimera-memory"
+    _, out = _run(capsys, "tool-notes", "suggest", "--json", "--limit", "1", "--memory-dir", str(mem))
+    assert len(json.loads(out)["suggestions"]) == 1
+
+
+def test_docs_tool_notes_no_forbidden_phrases() -> None:
+    # tests/ -> chimera-memory/ -> packages/ -> repo root -> docs/tool-notes.md
+    doc = Path(__file__).resolve().parents[3] / "docs" / "tool-notes.md"
+    assert doc.exists()
+    low = doc.read_text(encoding="utf-8").lower()
+    for phrase in _FORBIDDEN:
+        assert phrase not in low, f"doc overclaim phrase: {phrase!r}"

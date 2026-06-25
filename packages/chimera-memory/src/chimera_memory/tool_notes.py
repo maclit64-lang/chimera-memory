@@ -149,6 +149,17 @@ def tool_notes_for_root(root: str | Path) -> list[ToolNote]:
     return read_tool_notes(MemoryStore.from_paths(root=root))
 
 
+def find_tool_note(store: MemoryStore, note_id: str) -> ToolNote | None:
+    """Return the tool note with this exact note_id, or None. Read-only.
+
+    Exact match only — no fuzzy matching or prefix resolution.
+    """
+    for note in read_tool_notes(store):
+        if note.note_id == note_id:
+            return note
+    return None
+
+
 def filter_tool_notes(
     notes: list[ToolNote],
     *,

@@ -232,8 +232,31 @@ _TOOLS = [
                 "description": "Exact workflow_name filter (optional).",
             },
             "tag": {"type": "string", "description": "Exact tag filter, membership (optional)."},
+            "limit": {
+                "type": "integer",
+                "description": "Max suggestions to return (>=0, optional).",
+            },
         },
         required=[],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_tool_note_show",
+        description=(
+            "Show one local tool note by exact note_id. Read-only: never writes, "
+            "creates a store, runs commands, or calls models. Returns found=false when "
+            "the id is unknown. Advisory — local operational notes only; not a "
+            "correctness, safety, approval, merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "note_id": {"type": "string", "description": "Exact note id (tn_...)."},
+        },
+        required=["note_id"],
         permission="read",
     ),
     _tool(
@@ -488,6 +511,9 @@ def _tool_tool_notes_suggest(args: dict[str, Any], *, root: Path) -> dict[str, A
         workflow_name=workflow_name,
         tag=tag,
     )
+    limit = args.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        matched = matched[: max(limit, 0)]
     return {
         "schema_version": 1,
         "advisory": (
@@ -501,6 +527,21 @@ def _tool_tool_notes_suggest(args: dict[str, Any], *, root: Path) -> dict[str, A
             "tag": tag,
         },
         "suggestions": [n.to_dict() for n in matched],
+    }
+
+
+def _tool_tool_note_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: show one tool note by exact note_id. Never writes or creates a store."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_notes import find_tool_note
+
+    arg_root = args.get("root")
+    store_root = Path(arg_root) if arg_root else root
+    note = find_tool_note(MemoryStore.from_paths(root=store_root), str(args.get("note_id", "")))
+    return {
+        "schema_version": 1,
+        "tool_note": note.to_dict() if note else None,
+        "found": note is not None,
     }
 
 
@@ -560,6 +601,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_settle": lambda a, *, root, perms: _tool_settle(a, root=root),
     "chimera_xray_generate": lambda a, *, root, perms: _tool_xray(a, root=root),
     "chimera_tool_notes_suggest": lambda a, *, root, perms: _tool_tool_notes_suggest(a, root=root),
+    "chimera_tool_note_show": lambda a, *, root, perms: _tool_tool_note_show(a, root=root),
     "chimera_tool_note_add": lambda a, *, root, perms: _tool_tool_note_add(a, root=root),
 }
 
