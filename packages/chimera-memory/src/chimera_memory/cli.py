@@ -1039,6 +1039,22 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--failure-origin", dest="preflight_failure_origin")
     preflight_parser.add_argument("--verification-scope", dest="preflight_vs")
     preflight_parser.add_argument("--limit", dest="preflight_limit", type=int, default=10)
+    preflight_parser.add_argument(
+        "--task-kind", dest="preflight_tn_task_kind",
+        help="Surface tool lessons matching this exact task_kind (advisory).",
+    )
+    preflight_parser.add_argument(
+        "--tool", dest="preflight_tn_tool",
+        help="Surface tool lessons matching this exact tool_name (advisory).",
+    )
+    preflight_parser.add_argument(
+        "--workflow", dest="preflight_tn_workflow",
+        help="Surface tool lessons matching this exact workflow_name (advisory).",
+    )
+    preflight_parser.add_argument(
+        "--tag", dest="preflight_tn_tag",
+        help="Surface tool lessons matching this exact tag (advisory).",
+    )
     preflight_parser.add_argument("--json", action="store_true")
     preflight_parser.set_defaults(command="preflight")
 
@@ -1592,6 +1608,11 @@ def _preflight(parsed: argparse.Namespace) -> int:
         validate_verification_scope,
     )
     from chimera_memory.preflight import build_preflight, format_preflight_text
+    from chimera_memory.tool_notes import (
+        filter_tool_notes,
+        read_tool_notes,
+        render_preflight_tool_lessons,
+    )
 
     # Validate enum filters
     fo = getattr(parsed, "preflight_failure_origin", None)
@@ -1618,10 +1639,43 @@ def _preflight(parsed: argparse.Namespace) -> int:
         verification_scope=vs,
         limit=getattr(parsed, "preflight_limit", 10),
     )
+    # Stage 4: read-only tool-note advisory. Quiet by default — surfaced only
+    # when an exact-match tool-note filter is supplied; never ranks or executes.
+    tn_task_kind = getattr(parsed, "preflight_tn_task_kind", None)
+    tn_tool = getattr(parsed, "preflight_tn_tool", None)
+    tn_workflow = getattr(parsed, "preflight_tn_workflow", None)
+    tn_tag = getattr(parsed, "preflight_tn_tag", None)
+    tn_filter_given = any(x is not None for x in (tn_task_kind, tn_tool, tn_workflow, tn_tag))
+    tn_matched = (
+        filter_tool_notes(
+            read_tool_notes(store),
+            task_kind=tn_task_kind,
+            tool_name=tn_tool,
+            workflow_name=tn_workflow,
+            tag=tn_tag,
+        )
+        if tn_filter_given
+        else []
+    )
+
     if parsed.json:
-        print(json.dumps(report.to_dict(), sort_keys=True))
+        payload = report.to_dict()
+        payload["tool_note_advisory"] = {
+            "schema_version": 1,
+            "filters": {
+                "task_kind": tn_task_kind,
+                "tag": tn_tag,
+                "tool_name": tn_tool,
+                "workflow_name": tn_workflow,
+            },
+            "tool_notes": [n.to_dict() for n in tn_matched],
+        }
+        print(json.dumps(payload, sort_keys=True))
     else:
-        print(format_preflight_text(report))
+        text = format_preflight_text(report)
+        if tn_matched:
+            text = text + "\n\n" + render_preflight_tool_lessons(tn_matched)
+        print(text)
     return 0
 
 

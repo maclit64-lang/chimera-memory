@@ -203,3 +203,27 @@ def render_suggestions_text(notes: list[ToolNote]) -> str:
         "Candidate tool lessons (advisory; exact-match, no ranking):\n"
         + render_tool_notes_text(notes)
     )
+
+
+def render_preflight_tool_lessons(notes: list[ToolNote]) -> str:
+    """Render the preflight '## Tool lessons' advisory section. Advisory only.
+
+    Local operational lessons surfaced before work; never a guarantee. Listed in
+    stored order (no ranking). Callers render this only when notes match.
+    """
+    lines: list[str] = [
+        "## Tool lessons",
+        "",
+        "Advisory only. Local operational lessons; not a correctness, safety, "
+        "approval, merge, production-readiness, or speed guarantee.",
+        "",
+    ]
+    for n in notes:
+        lines.append(f"- [{n.task_kind}] {n.tool_name} / {n.workflow_name}")
+        if n.lesson:
+            lines.append(f"  Lesson: {n.lesson}")
+        if n.evidence:
+            lines.append(f"  Evidence: {n.evidence}")
+        if n.caveat:
+            lines.append(f"  Caveat: {n.caveat}")
+    return "\n".join(lines)
