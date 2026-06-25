@@ -784,3 +784,86 @@ def test_mcp_work_packet_no_forbidden_phrases(tmp_path: Path) -> None:
     blob = (t["description"] + json.dumps(d)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── work packet review thread (read-only MCP tools) ──────────────────────────
+
+def _seed_thread(tmp_path: Path) -> Path:
+    from datetime import UTC, datetime, timedelta
+
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_notes import add_tool_note, build_tool_note
+    from chimera_memory.work_packet import add_thread_snapshot, build_work_packet
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", workflow_name="w",
+                                         lesson="L"))
+    td = tmp_path / "thread"
+    t0 = datetime(2026, 6, 25, 10, 0, 0, tzinfo=UTC)
+    add_thread_snapshot(build_work_packet(store, generated_at=t0.isoformat()),
+                        thread_dir=td, store_label="ws", now=t0, label="first")
+    add_tool_note(store, build_tool_note(task_kind="k2", tool_name="t2", lesson="L2"))
+    t1 = t0 + timedelta(seconds=5)
+    add_thread_snapshot(build_work_packet(store, generated_at=t1.isoformat()),
+                        thread_dir=td, store_label="ws", now=t1, label="second")
+    return td
+
+
+def test_mcp_thread_tools_listed_read_only() -> None:
+    names = {t["name"] for t in list_tools(_ro())}
+    assert "chimera_work_packet_thread_list" in names
+    assert "chimera_work_packet_thread_inspect" in names
+    assert "chimera_work_packet_thread_diff_latest" in names
+
+
+def test_mcp_thread_list_inspect_diff(tmp_path: Path) -> None:
+    td = _seed_thread(tmp_path)
+    lst = call_tool("chimera_work_packet_thread_list", {"thread_dir": str(td)},
+                    perms=_ro(), root=tmp_path)
+    assert lst["artifact"] == "chimera_work_packet_thread"
+    assert lst["snapshot_count"] == 2
+    ins = call_tool("chimera_work_packet_thread_inspect", {"thread_dir": str(td)},
+                    perms=_ro(), root=tmp_path)
+    assert ins["valid"] is True
+    diff = call_tool("chimera_work_packet_thread_diff_latest", {"thread_dir": str(td)},
+                     perms=_ro(), root=tmp_path)
+    assert diff["artifact"] == "chimera_work_packet_diff"
+    assert diff["summary_delta"]["tool_note_count"] == 1
+
+
+def test_mcp_thread_list_missing_returns_error(tmp_path: Path) -> None:
+    r = call_tool("chimera_work_packet_thread_list", {"thread_dir": str(tmp_path / "nope")},
+                  perms=_ro(), root=tmp_path)
+    assert "error" in r
+
+
+def test_mcp_thread_reads_do_not_create_store_or_mutate(tmp_path: Path) -> None:
+    td = _seed_thread(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    store_snap = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    thread_snap = sorted((str(p.relative_to(td)), p.stat().st_size)
+                         for p in td.rglob("*") if p.is_file())
+    for name in ("chimera_work_packet_thread_list", "chimera_work_packet_thread_inspect",
+                 "chimera_work_packet_thread_diff_latest"):
+        call_tool(name, {"thread_dir": str(td)}, perms=_ro(), root=tmp_path)
+    assert {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()} == store_snap
+    assert sorted((str(p.relative_to(td)), p.stat().st_size)
+                  for p in td.rglob("*") if p.is_file()) == thread_snap
+    # an empty root is not turned into a store by a thread read
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    call_tool("chimera_work_packet_thread_inspect", {"thread_dir": str(empty / "t")},
+              perms=_ro(), root=empty)
+    assert not (empty / ".chimera-memory").exists()
+
+
+def test_mcp_thread_tools_no_forbidden_phrases(tmp_path: Path) -> None:
+    td = _seed_thread(tmp_path)
+    blob = ""
+    for name in ("chimera_work_packet_thread_list", "chimera_work_packet_thread_inspect",
+                 "chimera_work_packet_thread_diff_latest"):
+        t = next(x for x in list_tools(_ro()) if x["name"] == name)
+        r = call_tool(name, {"thread_dir": str(td)}, perms=_ro(), root=tmp_path)
+        blob += t["description"] + json.dumps(r)
+    low = blob.lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"

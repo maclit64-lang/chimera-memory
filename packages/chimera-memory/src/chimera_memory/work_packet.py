@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -541,4 +542,261 @@ def render_diff_markdown(diff: dict[str, Any]) -> str:
     lines.append("Candidate tool lessons:")
     lines.append(f"- added: {', '.join(diff['candidate_tool_lessons']['added']) or '(none)'}")
     lines.append(f"- removed: {', '.join(diff['candidate_tool_lessons']['removed']) or '(none)'}")
+    return "\n".join(lines)
+
+
+# ── v0: review thread (local timeline of bundles) ────────────────────────────
+
+THREAD_ARTIFACT = "chimera_work_packet_thread"
+THREAD_INSPECTION_ARTIFACT = "chimera_work_packet_thread_inspection"
+THREAD_ADVISORY = (
+    "local review thread index only; not a correctness, safety, approval, merge, "
+    "production-readiness, or speed guarantee"
+)
+
+_THREAD_INDEX = "index.json"
+_THREAD_INDEX_MD = "INDEX.md"
+_THREAD_PACKETS = "packets"
+
+
+class ThreadError(Exception):
+    """Raised for review-thread precondition failures (clean CLI errors)."""
+
+
+def _packet_json_bytes(packet: WorkPacket) -> bytes:
+    return (json.dumps(packet.to_dict(), sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+
+def make_snapshot_id(packet: WorkPacket, now: datetime) -> str:
+    """Deterministic snapshot id: ``wp_<UTC stamp>_<8-char content hash>``."""
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    digest = hashlib.sha256(_packet_json_bytes(packet)).hexdigest()[:8]
+    return f"wp_{stamp}_{digest}"
+
+
+def read_thread_index(thread_dir: Path) -> dict[str, Any] | None:
+    """Read the thread ``index.json`` (or None if absent). Read-only."""
+    index_path = thread_dir / _THREAD_INDEX
+    if not index_path.exists():
+        return None
+    return json.loads(index_path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+
+def add_thread_snapshot(
+    packet: WorkPacket,
+    *,
+    thread_dir: Path,
+    store_label: str,
+    now: datetime,
+    label: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Write the packet as a bundle under ``thread_dir/packets/<id>/`` and append the index.
+
+    Writes only under ``thread_dir``; never touches the memory store. The parent
+    of ``thread_dir`` must already exist. Refuses to overwrite an existing
+    snapshot directory. Returns the updated index dict.
+    """
+    if not thread_dir.parent.exists():
+        raise ThreadError(f"parent directory does not exist: {thread_dir.parent}")
+    packets_dir = thread_dir / _THREAD_PACKETS
+    packets_dir.mkdir(parents=True, exist_ok=True)
+
+    created_at = now.isoformat()
+    snapshot_id = make_snapshot_id(packet, now)
+    snapshot_dir = packets_dir / snapshot_id
+    if snapshot_dir.exists() and any(snapshot_dir.iterdir()):
+        raise ThreadError(f"snapshot already exists: {snapshot_id}")
+
+    write_work_packet_bundle(packet, output_dir=snapshot_dir, store_label=store_label)
+    packet_sha256 = hashlib.sha256((snapshot_dir / _BUNDLE_JSON).read_bytes()).hexdigest()
+    manifest_sha256 = hashlib.sha256((snapshot_dir / _BUNDLE_MANIFEST).read_bytes()).hexdigest()
+
+    entry = {
+        "snapshot_id": snapshot_id,
+        "created_at": created_at,
+        "path": f"{_THREAD_PACKETS}/{snapshot_id}",
+        "label": label,
+        "note": note,
+        "filters": packet.filters.to_dict(),
+        "packet_summary": packet.summary.to_dict(),
+        "manifest_sha256": manifest_sha256,
+        "packet_sha256": packet_sha256,
+    }
+
+    index = read_thread_index(thread_dir)
+    if index is None:
+        index = {
+            "schema_version": SCHEMA_VERSION,
+            "artifact": THREAD_ARTIFACT,
+            "advisory": THREAD_ADVISORY,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "snapshot_count": 0,
+            "latest_snapshot_id": None,
+            "snapshots": [],
+        }
+    index["snapshots"].append(entry)
+    index["updated_at"] = created_at
+    index["snapshot_count"] = len(index["snapshots"])
+    index["latest_snapshot_id"] = snapshot_id
+
+    (thread_dir / _THREAD_INDEX).write_text(
+        json.dumps(index, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    (thread_dir / _THREAD_INDEX_MD).write_text(render_index_md(index), encoding="utf-8")
+    return index
+
+
+def inspect_thread(thread_dir: Path) -> dict[str, Any]:
+    """Verify each snapshot bundle and its index-recorded hashes. Read-only."""
+    index = read_thread_index(thread_dir)
+    if index is None:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "artifact": THREAD_INSPECTION_ARTIFACT,
+            "valid": False,
+            "snapshot_count": 0,
+            "latest_snapshot_id": None,
+            "snapshots": [],
+            "errors": [f"{_THREAD_INDEX} not found"],
+        }
+    errors: list[str] = []
+    results: list[dict[str, Any]] = []
+    for entry in index.get("snapshots", []):
+        sid = entry.get("snapshot_id", "")
+        snapshot_dir = thread_dir / entry.get("path", f"{_THREAD_PACKETS}/{sid}")
+        snap_errors: list[str] = []
+        exists = snapshot_dir.exists()
+        bundle_valid = False
+        if not exists:
+            snap_errors.append(f"missing snapshot directory: {sid}")
+        else:
+            inspection = inspect_bundle(snapshot_dir)
+            bundle_valid = bool(inspection["valid"])
+            snap_errors.extend(f"{sid}: {e}" for e in inspection["errors"])
+            manifest_path = snapshot_dir / _BUNDLE_MANIFEST
+            packet_path = snapshot_dir / _BUNDLE_JSON
+            if entry.get("manifest_sha256") and manifest_path.exists():
+                actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                if actual != entry["manifest_sha256"]:
+                    snap_errors.append(f"{sid}: manifest_sha256 mismatch vs index")
+            if entry.get("packet_sha256") and packet_path.exists():
+                actual = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+                if actual != entry["packet_sha256"]:
+                    snap_errors.append(f"{sid}: packet_sha256 mismatch vs index")
+        results.append({
+            "snapshot_id": sid,
+            "exists": exists,
+            "bundle_valid": bundle_valid,
+            "errors": snap_errors,
+        })
+        errors.extend(snap_errors)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact": THREAD_INSPECTION_ARTIFACT,
+        "valid": not errors,
+        "snapshot_count": len(index.get("snapshots", [])),
+        "latest_snapshot_id": index.get("latest_snapshot_id"),
+        "snapshots": results,
+        "errors": errors,
+    }
+
+
+def _thread_diff(thread_dir: Path, old_id: str, new_id: str) -> dict[str, Any]:
+    old_packet = load_packet_dict(thread_dir / _THREAD_PACKETS / old_id)
+    new_packet = load_packet_dict(thread_dir / _THREAD_PACKETS / new_id)
+    return diff_packets(old_packet, new_packet, old_path=old_id, new_path=new_id)
+
+
+def thread_diff_latest(thread_dir: Path) -> dict[str, Any]:
+    """Diff the latest two snapshots (index order). Read-only."""
+    index = read_thread_index(thread_dir)
+    snapshots = (index or {}).get("snapshots", [])
+    if len(snapshots) < 2:
+        raise ThreadError("need at least two snapshots to diff")
+    return _thread_diff(thread_dir, snapshots[-2]["snapshot_id"], snapshots[-1]["snapshot_id"])
+
+
+def thread_diff_by_id(thread_dir: Path, old_id: str, new_id: str) -> dict[str, Any]:
+    """Diff two snapshots by exact id. Read-only."""
+    index = read_thread_index(thread_dir)
+    if index is None:
+        raise ThreadError(f"{_THREAD_INDEX} not found")
+    known = {s["snapshot_id"] for s in index.get("snapshots", [])}
+    for sid in (old_id, new_id):
+        if sid not in known:
+            raise ThreadError(f"unknown snapshot id: {sid}")
+    return _thread_diff(thread_dir, old_id, new_id)
+
+
+def render_index_md(index: dict[str, Any]) -> str:
+    """Render INDEX.md (human timeline mirror of index.json). Presentation only."""
+    lines: list[str] = []
+    lines.append("# Chimera Work Packet Review Thread")
+    lines.append("")
+    lines.append(f"Advisory only. {THREAD_ADVISORY}.")
+    lines.append("")
+    lines.append("## Snapshots")
+    lines.append("")
+    lines.append("| Snapshot | Created | Claims | Unresolved | Tool notes | Candidates | Label |")
+    lines.append("|---|---|---:|---:|---:|---:|---|")
+    for snap in index.get("snapshots", []):
+        s = snap.get("packet_summary", {})
+        label = snap.get("label") or ""
+        lines.append(
+            f"| {snap.get('snapshot_id', '')} | {snap.get('created_at', '')} "
+            f"| {s.get('shown_claim_count', 0)} | {s.get('open_or_unresolved_count', 0)} "
+            f"| {s.get('tool_note_count', 0)} | {s.get('candidate_count', 0)} | {label} |"
+        )
+    lines.append("")
+    lines.append("## Latest")
+    lines.append("")
+    latest = index.get("latest_snapshot_id")
+    if latest:
+        lines.append(f"- latest snapshot: {latest}")
+        lines.append(f"- packet: {_THREAD_PACKETS}/{latest}/{_BUNDLE_MD}")
+        lines.append(f"- JSON: {_THREAD_PACKETS}/{latest}/{_BUNDLE_JSON}")
+    else:
+        lines.append("- (none)")
+    return "\n".join(lines) + "\n"
+
+
+def render_thread_list_text(index: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Chimera Work Packet Review Thread")
+    lines.append("")
+    lines.append("Advisory only. Local packet timeline.")
+    lines.append(f"- snapshots: {index.get('snapshot_count', 0)}")
+    lines.append(f"- latest: {index.get('latest_snapshot_id') or '(none)'}")
+    for snap in index.get("snapshots", []):
+        s = snap.get("packet_summary", {})
+        label = snap.get("label")
+        suffix = f" — {label}" if label else ""
+        counts = (
+            f"claims={s.get('shown_claim_count', 0)} "
+            f"unresolved={s.get('open_or_unresolved_count', 0)} "
+            f"tool_notes={s.get('tool_note_count', 0)} "
+            f"candidates={s.get('candidate_count', 0)}"
+        )
+        lines.append(
+            f"- {snap.get('snapshot_id', '')} ({snap.get('created_at', '')}): {counts}{suffix}"
+        )
+    return "\n".join(lines)
+
+
+def render_thread_inspect_text(result: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Chimera Work Packet Review Thread inspection")
+    lines.append("")
+    lines.append("Advisory only. Local thread integrity check (bundle hashes/sizes).")
+    lines.append(f"- valid: {result['valid']}")
+    lines.append(f"- snapshots: {result['snapshot_count']}")
+    lines.append(f"- latest: {result.get('latest_snapshot_id') or '(none)'}")
+    for snap in result.get("snapshots", []):
+        lines.append(
+            f"- {snap['snapshot_id']}: exists={snap['exists']} bundle_valid={snap['bundle_valid']}"
+        )
+        for err in snap.get("errors", []):
+            lines.append(f"  - {err}")
     return "\n".join(lines)

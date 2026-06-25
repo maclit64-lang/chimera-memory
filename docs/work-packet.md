@@ -150,3 +150,65 @@ packet comparison: `summary_delta` counts, `claims` added/removed/status_changed
 added/removed (by `note_id`), and `candidate_tool_lessons` added/removed (by `candidate_id`). It
 is read-only and deterministic — not a correctness, safety, approval, merge, or
 production-readiness signal.
+
+
+## Review threads
+
+A **review thread** is a local directory that collects multiple packet bundles over time plus an
+index, so an agent or reviewer can track how a branch changed across snapshots. Where a single
+bundle is one moment, a thread is a **local packet timeline**.
+
+```
+THREAD_DIR/
+  index.json
+  INDEX.md
+  packets/
+    wp_<UTC-timestamp>_<8-char-hash>/   # a full bundle (WORK_PACKET.md/json/manifest/README)
+```
+
+Snapshot ids look like `wp_YYYYMMDDTHHMMSSZ_<hash>` — a UTC timestamp plus a short content hash of
+the packet JSON (safe path characters only). Git is never required; it is not used here.
+
+### Commands
+
+```bash
+chimera-memory work-packet thread add --thread-dir review-thread \
+  --task-kind large-repo-forensics --tag repo-forensics --limit-candidates 5 --label "first pass"
+chimera-memory work-packet thread list review-thread [--json]
+chimera-memory work-packet thread inspect review-thread [--json]
+chimera-memory work-packet thread diff-latest review-thread [--json]
+chimera-memory work-packet thread diff review-thread OLD_ID NEW_ID [--json]
+```
+
+- **add** builds the current Work Packet and writes it as a new bundle under
+  `packets/<snapshot_id>/`, then appends `index.json` and regenerates `INDEX.md`. It writes only
+  under `THREAD_DIR`, never touches `.chimera-memory`, requires an existing parent, and refuses to
+  overwrite an existing snapshot directory. `--label`/`--note` are recorded in the index only.
+- **list** reads `index.json` and shows snapshot ids, timestamps, summary counts, and labels
+  (read-only; does not verify hashes).
+- **inspect** verifies each snapshot directory exists, runs bundle inspection, and checks the
+  `manifest_sha256` / `packet_sha256` recorded in the index. It exits non-zero when invalid.
+- **diff-latest** compares the latest two snapshots; **diff** compares two exact snapshot ids.
+  Both reuse the existing packet diff and are read-only. Fewer than two snapshots, or an unknown
+  id, produces a clean error.
+
+### index.json fields
+
+`schema_version`, `artifact: "chimera_work_packet_thread"`, `advisory`, `created_at`,
+`updated_at`, `snapshot_count`, `latest_snapshot_id`, and `snapshots` — each entry carries
+`snapshot_id`, `created_at`, `path`, `label`, `note`, `filters`, `packet_summary`,
+`manifest_sha256`, and `packet_sha256`. New snapshots are appended; existing entries and bundles
+are never rewritten. `INDEX.md` mirrors the index as a human-readable timeline table.
+
+### MCP (read-only)
+
+`chimera_work_packet_thread_list`, `chimera_work_packet_thread_inspect`, and
+`chimera_work_packet_thread_diff_latest` are read-only tools (available without `--allow-write`)
+that take a `thread_dir` (resolved against `root` if relative) and never write, create a store, or
+mutate the thread. Thread `add` is intentionally CLI-only (it writes a file tree).
+
+### Non-goals
+
+A review thread is a local packet timeline and local review thread index — advisory only. It is
+**not** a correctness, safety, approval, merge, or production-readiness signal, and not a form of
+verification. It does not save tool notes, run tools, spawn agents, score, route, rank, or sync.

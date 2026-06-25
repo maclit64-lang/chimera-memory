@@ -745,6 +745,58 @@ def _build_parser() -> argparse.ArgumentParser:
     wp_diff.add_argument("new", help="NEW bundle directory or work-packet.json file")
     wp_diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     wp_diff.add_argument("--markdown", action="store_true", help="Emit markdown (default view)")
+    wp_thread = wp_sub.add_parser(
+        "thread",
+        help="Local review-thread timeline of packet bundles (add/list/inspect/diff).",
+    )
+    thread_sub = wp_thread.add_subparsers(dest="thread_command")
+
+    wpt_add = thread_sub.add_parser(
+        "add", help="Append the current packet as a snapshot bundle under the thread dir."
+    )
+    wpt_add.add_argument(
+        "--thread-dir", dest="thread_dir", required=True,
+        help="Review thread directory (parent must exist).",
+    )
+    wpt_add.add_argument("--claim", dest="claim_id", help="Filter to this claim id")
+    wpt_add.add_argument("--session", dest="session_id", help="Filter to this session id")
+    wpt_add.add_argument("--status", help="Filter claims by exact latest_status")
+    wpt_add.add_argument(
+        "--task-kind", dest="task_kind", help="Filter tool notes and candidates by task_kind"
+    )
+    wpt_add.add_argument("--tag", dest="tag", help="Filter tool notes and candidates by tag")
+    wpt_add.add_argument(
+        "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
+    )
+    wpt_add.add_argument(
+        "--limit-candidates", dest="limit_candidates", type=int,
+        help="Max candidate lessons (>=0).",
+    )
+    wpt_add.add_argument("--label", dest="label", help="Short label recorded in the index only.")
+    wpt_add.add_argument("--note", dest="note", help="Short note recorded in the index only.")
+    wpt_add.add_argument("--memory-dir")
+
+    wpt_list = thread_sub.add_parser("list", help="List thread snapshots from index.json.")
+    wpt_list.add_argument("thread_dir", help="Review thread directory")
+    wpt_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    wpt_inspect = thread_sub.add_parser(
+        "inspect", help="Verify every snapshot bundle in the thread. Read-only."
+    )
+    wpt_inspect.add_argument("thread_dir", help="Review thread directory")
+    wpt_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    wpt_diff_latest = thread_sub.add_parser(
+        "diff-latest", help="Diff the latest two snapshots in the thread. Read-only."
+    )
+    wpt_diff_latest.add_argument("thread_dir", help="Review thread directory")
+    wpt_diff_latest.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    wpt_diff = thread_sub.add_parser("diff", help="Diff two snapshots by exact id. Read-only.")
+    wpt_diff.add_argument("thread_dir", help="Review thread directory")
+    wpt_diff.add_argument("old_id", help="OLD snapshot id (wp_...)")
+    wpt_diff.add_argument("new_id", help="NEW snapshot id (wp_...)")
+    wpt_diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     work_packet_parser.set_defaults(command="work-packet")
 
     tool_notes_parser = subparsers.add_parser(
@@ -4145,6 +4197,8 @@ def _work_packet(parsed: argparse.Namespace) -> int:
         return _work_packet_inspect(parsed)
     if wpc == "diff":
         return _work_packet_diff(parsed)
+    if wpc == "thread":
+        return _work_packet_thread(parsed)
 
     from datetime import UTC, datetime
 
@@ -4266,6 +4320,105 @@ def _work_packet_diff(parsed: argparse.Namespace) -> int:
     else:
         print(render_diff_markdown(diff))
     return 0
+
+
+def _work_packet_thread(parsed: argparse.Namespace) -> int:
+    """Local review-thread timeline (add/list/inspect/diff-latest/diff)."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.work_packet import (
+        ThreadError,
+        add_thread_snapshot,
+        build_work_packet,
+        inspect_thread,
+        read_thread_index,
+        render_thread_inspect_text,
+        render_thread_list_text,
+        thread_diff_by_id,
+        thread_diff_latest,
+    )
+
+    tc = getattr(parsed, "thread_command", None)
+
+    if tc == "add":
+        from chimera_memory.work_packet import BundleError
+
+        memory_dir = getattr(parsed, "memory_dir", None)
+        store = (
+            MemoryStore.from_paths(memory_dir=memory_dir)
+            if memory_dir
+            else MemoryStore.from_paths(root=Path.cwd())
+        )
+        now = datetime.now(UTC)
+        packet = build_work_packet(
+            store,
+            generated_at=now.isoformat(),
+            claim_id=getattr(parsed, "claim_id", None),
+            session_id=getattr(parsed, "session_id", None),
+            status=getattr(parsed, "status", None),
+            task_kind=getattr(parsed, "task_kind", None),
+            tag=getattr(parsed, "tag", None),
+            limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
+            limit_candidates=getattr(parsed, "limit_candidates", None),
+        )
+        try:
+            store_label = str(store.memory_dir.relative_to(Path.cwd()))
+        except ValueError:
+            store_label = store.memory_dir.name
+        try:
+            index = add_thread_snapshot(
+                packet, thread_dir=Path(parsed.thread_dir), store_label=store_label,
+                now=now, label=getattr(parsed, "label", None),
+                note=getattr(parsed, "note", None),
+            )
+        except (ThreadError, BundleError) as exc:
+            print(f"error: {exc}", file=__import__("sys").stderr)
+            return 2
+        print(
+            f"Snapshot {index['latest_snapshot_id']} added to {parsed.thread_dir} "
+            f"({index['snapshot_count']} total)"
+        )
+        return 0
+
+    if tc == "list":
+        loaded = read_thread_index(Path(parsed.thread_dir))
+        if loaded is None:
+            print(f"error: no thread index at {parsed.thread_dir}", file=__import__("sys").stderr)
+            return 2
+        if getattr(parsed, "json", False):
+            print(json.dumps(loaded, sort_keys=True))
+        else:
+            print(render_thread_list_text(loaded))
+        return 0
+
+    if tc == "inspect":
+        result = inspect_thread(Path(parsed.thread_dir))
+        if getattr(parsed, "json", False):
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(render_thread_inspect_text(result))
+        return 0 if result["valid"] else 1
+
+    if tc in ("diff-latest", "diff"):
+        from chimera_memory.work_packet import render_diff_markdown
+
+        try:
+            if tc == "diff-latest":
+                diff = thread_diff_latest(Path(parsed.thread_dir))
+            else:
+                diff = thread_diff_by_id(Path(parsed.thread_dir), parsed.old_id, parsed.new_id)
+        except ThreadError as exc:
+            print(f"error: {exc}", file=__import__("sys").stderr)
+            return 2
+        if getattr(parsed, "json", False):
+            print(json.dumps(diff, sort_keys=True))
+        else:
+            print(render_diff_markdown(diff))
+        return 0
+
+    print("error: a thread subcommand is required "
+          "(add/list/inspect/diff-latest/diff)", file=__import__("sys").stderr)
+    return 2
 
 
 def _tool_notes(parsed: argparse.Namespace) -> int:

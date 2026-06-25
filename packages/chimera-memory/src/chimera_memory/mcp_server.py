@@ -418,6 +418,63 @@ _TOOLS = [
         required=[],
         permission="read",
     ),
+    _tool(
+        name="chimera_work_packet_thread_list",
+        description=(
+            "List the snapshots in a local Work Packet review thread (reads index.json). "
+            "Read-only: never writes, creates a store, or mutates the thread directory. "
+            "Advisory — a local review thread index; not a correctness, safety, approval, "
+            "merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root for a relative thread_dir (default: server root).",
+                "default": ".",
+            },
+            "thread_dir": {"type": "string", "description": "Review thread directory."},
+        },
+        required=["thread_dir"],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_work_packet_thread_inspect",
+        description=(
+            "Verify every snapshot bundle in a local Work Packet review thread (hashes/sizes). "
+            "Read-only: never writes, creates a store, or mutates the thread directory. "
+            "Advisory — a local review thread integrity check; not a correctness, safety, "
+            "approval, merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root for a relative thread_dir (default: server root).",
+                "default": ".",
+            },
+            "thread_dir": {"type": "string", "description": "Review thread directory."},
+        },
+        required=["thread_dir"],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_work_packet_thread_diff_latest",
+        description=(
+            "Compare the latest two snapshots in a local Work Packet review thread. "
+            "Read-only: never writes, creates a store, or mutates the thread directory. "
+            "Advisory — a local packet comparison; not a correctness, safety, approval, "
+            "merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root for a relative thread_dir (default: server root).",
+                "default": ".",
+            },
+            "thread_dir": {"type": "string", "description": "Review thread directory."},
+        },
+        required=["thread_dir"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -841,6 +898,39 @@ def _tool_work_packet(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
     return packet.to_dict()
 
 
+def _thread_dir_from(args: dict[str, Any], *, root: Path) -> Path:
+    raw = args.get("thread_dir") or ""
+    p = Path(raw)
+    return p if p.is_absolute() else root / p
+
+
+def _tool_work_packet_thread_list(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: list review-thread snapshots from index.json."""
+    from chimera_memory.work_packet import read_thread_index
+
+    index = read_thread_index(_thread_dir_from(args, root=root))
+    if index is None:
+        return {"error": f"no thread index at {args.get('thread_dir')!r}"}
+    return index
+
+
+def _tool_work_packet_thread_inspect(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: verify every snapshot bundle in a review thread."""
+    from chimera_memory.work_packet import inspect_thread
+
+    return inspect_thread(_thread_dir_from(args, root=root))
+
+
+def _tool_work_packet_thread_diff_latest(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: diff the latest two snapshots in a review thread."""
+    from chimera_memory.work_packet import ThreadError, thread_diff_latest
+
+    try:
+        return thread_diff_latest(_thread_dir_from(args, root=root))
+    except ThreadError as exc:
+        return {"error": str(exc)}
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -859,6 +949,15 @@ _TOOL_DISPATCH: dict[str, Any] = {
         lambda a, *, root, perms: _tool_tool_note_candidate_show(a, root=root)
     ),
     "chimera_work_packet": lambda a, *, root, perms: _tool_work_packet(a, root=root),
+    "chimera_work_packet_thread_list": (
+        lambda a, *, root, perms: _tool_work_packet_thread_list(a, root=root)
+    ),
+    "chimera_work_packet_thread_inspect": (
+        lambda a, *, root, perms: _tool_work_packet_thread_inspect(a, root=root)
+    ),
+    "chimera_work_packet_thread_diff_latest": (
+        lambda a, *, root, perms: _tool_work_packet_thread_diff_latest(a, root=root)
+    ),
 }
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +14,20 @@ from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
 from chimera_memory.tool_notes import add_tool_note, build_tool_note
 from chimera_memory.work_packet import (
     BundleError,
+    ThreadError,
+    add_thread_snapshot,
     build_work_packet,
     diff_packets,
     inspect_bundle,
+    inspect_thread,
     load_packet_dict,
+    make_snapshot_id,
+    read_thread_index,
     render_diff_markdown,
+    render_index_md,
     render_work_packet_markdown,
+    thread_diff_by_id,
+    thread_diff_latest,
     write_work_packet_bundle,
 )
 
@@ -573,3 +582,211 @@ def test_bundle_diff_no_forbidden_phrases(
     low = blob.lower()
     for phrase in _FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── v0: review thread ────────────────────────────────────────────────────────
+
+_T0 = datetime(2026, 6, 25, 10, 0, 0, tzinfo=UTC)
+_INDEX_KEYS = {
+    "schema_version", "artifact", "advisory", "created_at", "updated_at",
+    "snapshot_count", "latest_snapshot_id", "snapshots",
+}
+
+
+def _add_two_snapshots(tmp_path: Path) -> Path:
+    """Seed a thread with two distinct snapshots; return the thread dir."""
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="large-repo-forensics", tool_name="pa",
+                                         workflow_name="wf", lesson="L", tags=("repo-forensics",)))
+    td = tmp_path / "review-thread"
+    p1 = build_work_packet(store, generated_at=_T0.isoformat())
+    add_thread_snapshot(p1, thread_dir=td, store_label="ws", now=_T0, label="first")
+    add_tool_note(store, build_tool_note(task_kind="quick-fix", tool_name="single", lesson="L2",
+                                         tags=("small",)))
+    t1 = _T0 + timedelta(seconds=5)
+    p2 = build_work_packet(store, generated_at=t1.isoformat())
+    add_thread_snapshot(p2, thread_dir=td, store_label="ws", now=t1, label="second")
+    return td
+
+
+def test_thread_add_creates_index_and_bundle(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", workflow_name="w",
+                                         lesson="L"))
+    td = tmp_path / "review-thread"
+    index = add_thread_snapshot(build_work_packet(store, generated_at=_T0.isoformat()),
+                                thread_dir=td, store_label="ws", now=_T0, label="first")
+    assert (td / "index.json").exists()
+    assert (td / "INDEX.md").exists()
+    sid = index["latest_snapshot_id"]
+    bundle_dir = td / "packets" / sid
+    assert sorted(p.name for p in bundle_dir.iterdir()) == [
+        "README.md", "WORK_PACKET.md", "manifest.json", "work-packet.json",
+    ]
+    assert set(index) == _INDEX_KEYS
+    assert index["artifact"] == "chimera_work_packet_thread"
+    assert index["snapshots"][0]["label"] == "first"
+
+
+def test_thread_add_does_not_mutate_store(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", lesson="L"))
+    mem = tmp_path / ".chimera-memory"
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    add_thread_snapshot(build_work_packet(store, generated_at=_T0.isoformat()),
+                        thread_dir=tmp_path / "t", store_label="ws", now=_T0)
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after
+
+
+def test_thread_add_appends_second_snapshot(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    index = read_thread_index(td)
+    assert index is not None
+    assert index["snapshot_count"] == 2
+    ids = [s["snapshot_id"] for s in index["snapshots"]]
+    assert len(set(ids)) == 2
+    assert index["latest_snapshot_id"] == ids[-1]
+
+
+def test_snapshot_id_shape_is_safe_and_unique(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", lesson="L"))
+    sid = make_snapshot_id(build_work_packet(store, generated_at=_T0.isoformat()), _T0)
+    assert sid.startswith("wp_")
+    assert sid == "wp_20260625T100000Z_" + sid.split("_")[2]
+    assert " " not in sid and "/" not in sid
+    parts = sid.split("_")
+    assert len(parts) == 3 and len(parts[2]) == 8
+    # different content -> different id at the same instant
+    add_tool_note(store, build_tool_note(task_kind="k2", tool_name="t2", lesson="L2"))
+    sid2 = make_snapshot_id(build_work_packet(store, generated_at=_T0.isoformat()), _T0)
+    assert sid != sid2
+
+
+def test_thread_list_text_and_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    td = _add_two_snapshots(tmp_path)
+    code, text = _run(capsys, "work-packet", "thread", "list", str(td))
+    assert code == 0
+    assert "Local packet timeline" in text
+    assert "first" in text and "second" in text
+    code, jout = _run(capsys, "work-packet", "thread", "list", str(td), "--json")
+    d = json.loads(jout)
+    assert d["artifact"] == "chimera_work_packet_thread"
+    assert d["snapshot_count"] == 2
+
+
+def test_thread_list_missing_index_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _ = _run(capsys, "work-packet", "thread", "list", str(tmp_path / "nope"))
+    assert code == 2
+
+
+def test_thread_inspect_valid(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    result = inspect_thread(td)
+    assert result["artifact"] == "chimera_work_packet_thread_inspection"
+    assert result["valid"] is True
+    assert result["snapshot_count"] == 2
+    assert all(s["exists"] and s["bundle_valid"] for s in result["snapshots"])
+
+
+def test_thread_inspect_missing_packet_dir(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    sid = read_thread_index(td)["snapshots"][0]["snapshot_id"]  # type: ignore[index]
+    import shutil
+    shutil.rmtree(td / "packets" / sid)
+    result = inspect_thread(td)
+    assert result["valid"] is False
+    assert any("missing snapshot directory" in e for e in result["errors"])
+
+
+def test_thread_inspect_corrupt_bundle(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    sid = read_thread_index(td)["snapshots"][0]["snapshot_id"]  # type: ignore[index]
+    (td / "packets" / sid / "work-packet.json").write_text("tampered", encoding="utf-8")
+    result = inspect_thread(td)
+    assert result["valid"] is False
+    assert result["errors"]
+
+
+def test_thread_inspect_cli_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    td = _add_two_snapshots(tmp_path)
+    code, _ = _run(capsys, "work-packet", "thread", "inspect", str(td))
+    assert code == 0
+    sid = read_thread_index(td)["snapshots"][0]["snapshot_id"]  # type: ignore[index]
+    (td / "packets" / sid / "README.md").unlink()
+    code, jout = _run(capsys, "work-packet", "thread", "inspect", str(td), "--json")
+    assert code == 1
+    assert json.loads(jout)["valid"] is False
+
+
+def test_thread_diff_latest_compares_latest_two(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    diff = thread_diff_latest(td)
+    assert diff["artifact"] == "chimera_work_packet_diff"
+    assert diff["summary_delta"]["tool_note_count"] == 1
+    ids = [s["snapshot_id"] for s in read_thread_index(td)["snapshots"]]  # type: ignore[index]
+    assert diff["old"]["path"] == ids[0]
+    assert diff["new"]["path"] == ids[1]
+
+
+def test_thread_diff_exact_ids(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    ids = [s["snapshot_id"] for s in read_thread_index(td)["snapshots"]]  # type: ignore[index]
+    diff = thread_diff_by_id(td, ids[0], ids[1])
+    assert diff["new"]["path"] == ids[1]
+    assert len(diff["tool_notes"]["added"]) == 1
+
+
+def test_thread_diff_latest_needs_two_snapshots(tmp_path: Path) -> None:
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", lesson="L"))
+    td = tmp_path / "t"
+    add_thread_snapshot(build_work_packet(store, generated_at=_T0.isoformat()),
+                        thread_dir=td, store_label="ws", now=_T0)
+    with pytest.raises(ThreadError):
+        thread_diff_latest(td)
+
+
+def test_thread_diff_missing_id_errors(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    ids = [s["snapshot_id"] for s in read_thread_index(td)["snapshots"]]  # type: ignore[index]
+    with pytest.raises(ThreadError):
+        thread_diff_by_id(td, "wp_nope", ids[1])
+
+
+def test_thread_diff_cli_clean_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    td = _add_two_snapshots(tmp_path)
+    ids = [s["snapshot_id"] for s in read_thread_index(td)["snapshots"]]  # type: ignore[index]
+    code, _ = _run(capsys, "work-packet", "thread", "diff", str(td), "wp_nope", ids[1])
+    assert code == 2
+    # single-snapshot thread -> diff-latest exit 2
+    store = MemoryStore.from_paths(root=tmp_path / "two")
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", lesson="L"))
+    td2 = tmp_path / "two-thread"
+    add_thread_snapshot(build_work_packet(store, generated_at=_T0.isoformat()),
+                        thread_dir=td2, store_label="ws", now=_T0)
+    code, _ = _run(capsys, "work-packet", "thread", "diff-latest", str(td2))
+    assert code == 2
+
+
+def test_thread_index_md_and_json_no_forbidden(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    blob = (td / "INDEX.md").read_text(encoding="utf-8")
+    blob += (td / "index.json").read_text(encoding="utf-8")
+    blob += render_index_md(read_thread_index(td))  # type: ignore[arg-type]
+    low = blob.lower()
+    for phrase in _FORBIDDEN:
+        assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+def test_thread_index_stable_schema(tmp_path: Path) -> None:
+    td = _add_two_snapshots(tmp_path)
+    index = read_thread_index(td)
+    assert index is not None
+    assert set(index) == _INDEX_KEYS
+    entry = index["snapshots"][0]
+    assert set(entry) == {
+        "snapshot_id", "created_at", "path", "label", "note", "filters",
+        "packet_summary", "manifest_sha256", "packet_sha256",
+    }
