@@ -18,6 +18,8 @@ the file you name) and is a starting-context artifact, not a verdict.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,7 @@ from chimera_memory.work_packet import (
     WorkPacket,
     build_work_packet,
     read_thread_index,
+    thread_diff_by_id,
     thread_diff_latest,
 )
 
@@ -54,6 +57,7 @@ class BranchPrimerFilters:
     task_kind: str | None = None
     tag: str | None = None
     thread_dir: str | None = None
+    since: str | None = None
     limit_tool_notes: int | None = None
     limit_candidates: int | None = None
 
@@ -65,6 +69,7 @@ class BranchPrimerFilters:
             "task_kind": self.task_kind,
             "tag": self.tag,
             "thread_dir": self.thread_dir,
+            "since": self.since,
             "limit_tool_notes": self.limit_tool_notes,
             "limit_candidates": self.limit_candidates,
         }
@@ -99,7 +104,7 @@ class BranchPrimer:
     filters: BranchPrimerFilters
     summary: BranchPrimerSummary
     work_packet: dict[str, Any]
-    latest_thread_delta: dict[str, Any] | None
+    thread_delta: dict[str, Any] | None
     next_inspection_targets: tuple[HandoffTarget, ...]
     tool_notes: tuple[ToolNote, ...]
     candidate_tool_lessons: tuple[CandidateLesson, ...]
@@ -114,7 +119,7 @@ class BranchPrimer:
             "filters": self.filters.to_dict(),
             "summary": self.summary.to_dict(),
             "work_packet": self.work_packet,
-            "latest_thread_delta": self.latest_thread_delta,
+            "thread_delta": self.thread_delta,
             "next_inspection_targets": [t.to_dict() for t in self.next_inspection_targets],
             "tool_notes": [n.to_dict() for n in self.tool_notes],
             "candidate_tool_lessons": [c.to_dict() for c in self.candidate_tool_lessons],
@@ -172,6 +177,7 @@ def build_branch_primer(
     task_kind: str | None = None,
     tag: str | None = None,
     thread_dir: Path | None = None,
+    since: str | None = None,
     limit_tool_notes: int | None = None,
     limit_candidates: int | None = None,
 ) -> BranchPrimer:
@@ -195,7 +201,9 @@ def build_branch_primer(
 
     thread_snapshot_count = 0
     latest_snapshot: dict[str, Any] | None = None
-    latest_thread_delta: dict[str, Any] | None = None
+    thread_delta: dict[str, Any] | None = None
+    if since is not None and thread_dir is None:
+        raise ThreadError("--since requires a review thread directory")
     if thread_dir is not None:
         index = read_thread_index(thread_dir)
         if index is None:
@@ -204,8 +212,26 @@ def build_branch_primer(
         thread_snapshot_count = len(snapshots)
         if snapshots:
             latest_snapshot = snapshots[-1]
-        if thread_snapshot_count >= 2:
-            latest_thread_delta = thread_diff_latest(thread_dir)
+        if since is not None:
+            if latest_snapshot is None:
+                raise ThreadError("review thread has no latest snapshot to compare against")
+            known = {s["snapshot_id"] for s in snapshots}
+            if since not in known:
+                raise ThreadError(f"unknown snapshot id: {since}")
+            new_id = latest_snapshot["snapshot_id"]
+            thread_delta = {
+                "mode": "since",
+                "old_snapshot_id": since,
+                "new_snapshot_id": new_id,
+                "diff": thread_diff_by_id(thread_dir, since, new_id),
+            }
+        elif thread_snapshot_count >= 2:
+            thread_delta = {
+                "mode": "latest-two",
+                "old_snapshot_id": snapshots[-2]["snapshot_id"],
+                "new_snapshot_id": snapshots[-1]["snapshot_id"],
+                "diff": thread_diff_latest(thread_dir),
+            }
 
     summary = BranchPrimerSummary(
         shown_claim_count=packet.summary.shown_claim_count,
@@ -227,12 +253,13 @@ def build_branch_primer(
             task_kind=task_kind,
             tag=tag,
             thread_dir=str(thread_dir) if thread_dir is not None else None,
+            since=since,
             limit_tool_notes=limit_tool_notes,
             limit_candidates=limit_candidates,
         ),
         summary=summary,
         work_packet=_compact_packet(packet),
-        latest_thread_delta=latest_thread_delta,
+        thread_delta=thread_delta,
         next_inspection_targets=packet.next_inspection_targets,
         tool_notes=packet.tool_notes,
         candidate_tool_lessons=packet.candidate_tool_lessons,
@@ -277,9 +304,13 @@ def render_branch_primer_markdown(primer: BranchPrimer, *, store_label: str) -> 
     lines.append(f"- candidate lessons: {s.candidate_count}")
     lines.append(f"- thread snapshots: {s.thread_snapshot_count}")
     lines.append("")
-    if primer.latest_thread_delta is not None:
-        delta = primer.latest_thread_delta.get("summary_delta", {})
-        lines.append("## Latest thread delta")
+    if primer.thread_delta is not None:
+        td = primer.thread_delta
+        delta = td.get("diff", {}).get("summary_delta", {})
+        if td.get("mode") == "since":
+            lines.append(f"## Thread delta since {td.get('old_snapshot_id', '')}")
+        else:
+            lines.append("## Latest thread delta")
         lines.append(f"- claims shown: {_delta(delta.get('shown_claim_count', 0))}")
         lines.append(f"- unresolved: {_delta(delta.get('open_or_unresolved_count', 0))}")
         lines.append(f"- tool lessons: {_delta(delta.get('tool_note_count', 0))}")
@@ -316,3 +347,154 @@ def render_branch_primer_markdown(primer: BranchPrimer, *, store_label: str) -> 
     for item in primer.suggested_first_read:
         lines.append(f"- {item}")
     return "\n".join(lines)
+
+
+# ── prompt header + Agent Kickoff Pack bundle ────────────────────────────────
+
+KICKOFF_ARTIFACT = "chimera_agent_kickoff_pack"
+KICKOFF_ADVISORY = (
+    "local agent starting context only; not a correctness, safety, approval, merge, "
+    "production-readiness, or speed guarantee"
+)
+PROMPT_HEADER_ARTIFACT = "chimera_branch_primer_prompt_header"
+
+_PACK_PRIMER_MD = "BRANCH_PRIMER.md"
+_PACK_PRIMER_JSON = "branch-primer.json"
+_PACK_PROMPT_HEADER = "AGENT_PROMPT_HEADER.md"
+_PACK_README = "README.md"
+_PACK_MANIFEST = "manifest.json"
+_PACK_CONTENT_FILES = (_PACK_PRIMER_MD, _PACK_PRIMER_JSON, _PACK_PROMPT_HEADER, _PACK_README)
+
+_PACK_README_TEXT = (
+    "# Chimera Agent Kickoff Pack\n\n"
+    "A portable, local, advisory starting-context package for the next agent:\n\n"
+    f"- `{_PACK_PROMPT_HEADER}` — a pasteable agent prompt header (read this first).\n"
+    f"- `{_PACK_PRIMER_MD}` — the human-readable branch primer.\n"
+    f"- `{_PACK_PRIMER_JSON}` — the machine-readable branch primer.\n"
+    f"- `{_PACK_MANIFEST}` — the bundle manifest (file list + sha256 + byte counts).\n"
+    f"- `{_PACK_README}` — this file.\n\n"
+    "Advisory only — local agent starting context; not a correctness, safety, approval, "
+    "merge, or production-readiness signal.\n"
+)
+
+
+def render_prompt_header(primer: BranchPrimer) -> str:
+    """Render a compact, pasteable agent prompt header. Text only; advisory."""
+    s = primer.summary
+    lines: list[str] = []
+    lines.append("# Chimera Agent Kickoff Header")
+    lines.append("")
+    lines.append("Read this before starting work.")
+    lines.append("")
+    lines.append(f"Local advisory context only; {primer.advisory}.")
+    lines.append("")
+    lines.append("Current work state:")
+    lines.append(f"- claims shown: {s.shown_claim_count}")
+    lines.append(f"- unresolved items: {s.open_or_unresolved_count}")
+    lines.append(f"- next inspection targets: {s.next_inspection_target_count}")
+    lines.append(f"- tool lessons: {s.tool_note_count}")
+    lines.append(f"- candidate lessons: {s.candidate_count}")
+    lines.append("")
+    lines.append("Thread context:")
+    if s.thread_snapshot_count == 0:
+        lines.append("- review thread: (none)")
+    else:
+        td = primer.thread_delta
+        if td is not None:
+            diff = td.get("diff", {}).get("summary_delta", {})
+            source = (
+                f"since {td.get('old_snapshot_id', '')}"
+                if td.get("mode") == "since"
+                else "latest-two"
+            )
+            lines.append(f"- latest snapshot: {td.get('new_snapshot_id', '')}")
+            lines.append(f"- delta source: {source}")
+            lines.append(f"- unresolved delta: {_delta(diff.get('open_or_unresolved_count', 0))}")
+            lines.append(f"- tool lesson delta: {_delta(diff.get('tool_note_count', 0))}")
+        else:
+            lines.append(f"- snapshots: {s.thread_snapshot_count}")
+            lines.append("- delta source: none (need >=2 snapshots or --since)")
+    lines.append("")
+    lines.append("First inspection targets:")
+    if primer.next_inspection_targets:
+        for i, t in enumerate(primer.next_inspection_targets[:3], start=1):
+            lines.append(f"{i}. {t.claim_id} — {t.reason}")
+    else:
+        lines.append("1. (none)")
+    lines.append("")
+    lines.append("Relevant tool lessons:")
+    if primer.tool_notes:
+        for n in primer.tool_notes:
+            label = f"[{n.task_kind}] {n.tool_name} / {n.workflow_name}"
+            lines.append(f"- {label}: {n.lesson}" if n.lesson else f"- {label}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("Candidate lessons to review:")
+    if primer.candidate_tool_lessons:
+        for c in primer.candidate_tool_lessons:
+            lines.append(f"- [{c.task_kind}] {c.tool_name} / {c.workflow_name}: {c.lesson}")
+    else:
+        lines.append("- (none)")
+    return "\n".join(lines)
+
+
+class PackError(Exception):
+    """Raised for kickoff-pack write precondition failures (clean CLI errors)."""
+
+
+def _hashed_entry(name: str, data: bytes) -> dict[str, Any]:
+    return {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+
+def write_kickoff_pack(
+    primer: BranchPrimer,
+    *,
+    output_dir: Path,
+    store_label: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write a portable Agent Kickoff Pack (5 files) and return the manifest dict.
+
+    Writes only into ``output_dir``; never touches the memory store. The parent of
+    ``output_dir`` must already exist; an existing non-empty directory is refused
+    unless ``force`` (then the bundle files are overwritten).
+    """
+    if output_dir.exists() and output_dir.is_file():
+        raise PackError(f"output path is a file, not a directory: {output_dir}")
+    if not output_dir.parent.exists():
+        raise PackError(f"parent directory does not exist: {output_dir.parent}")
+    if output_dir.exists():
+        existing = [p.name for p in output_dir.iterdir()]
+        if existing and not force:
+            raise PackError(
+                f"output directory is not empty: {output_dir} (use --force to overwrite)"
+            )
+    else:
+        output_dir.mkdir()
+
+    rendered = {
+        _PACK_PRIMER_MD: render_branch_primer_markdown(primer, store_label=store_label) + "\n",
+        _PACK_PRIMER_JSON: json.dumps(primer.to_dict(), sort_keys=True, indent=2) + "\n",
+        _PACK_PROMPT_HEADER: render_prompt_header(primer) + "\n",
+        _PACK_README: _PACK_README_TEXT,
+    }
+    file_entries: list[dict[str, Any]] = []
+    for name in _PACK_CONTENT_FILES:
+        data = rendered[name].encode("utf-8")
+        (output_dir / name).write_bytes(data)
+        file_entries.append(_hashed_entry(name, data))
+
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact": KICKOFF_ARTIFACT,
+        "generated_at": primer.generated_at,
+        "advisory": KICKOFF_ADVISORY,
+        "filters": primer.filters.to_dict(),
+        "primer_summary": primer.summary.to_dict(),
+        "files": file_entries,
+    }
+    (output_dir / _PACK_MANIFEST).write_bytes(
+        (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    )
+    return manifest

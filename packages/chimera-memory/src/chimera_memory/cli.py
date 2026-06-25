@@ -831,6 +831,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Review thread directory to include (latest snapshot + delta).",
     )
     branch_primer_parser.add_argument(
+        "--since", dest="since",
+        help="Diff this exact snapshot id against the thread's latest (requires --thread-dir).",
+    )
+    branch_primer_parser.add_argument(
+        "--prompt-header", dest="prompt_header", action="store_true",
+        help="Emit a compact, pasteable agent prompt header (text only).",
+    )
+    branch_primer_parser.add_argument(
         "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
     )
     branch_primer_parser.add_argument(
@@ -841,6 +849,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output", dest="output", help="Write the primer to this file (parent must exist)."
     )
     branch_primer_parser.add_argument("--memory-dir")
+    bp_sub = branch_primer_parser.add_subparsers(dest="branch_primer_command")
+
+    bp_bundle = bp_sub.add_parser(
+        "bundle",
+        help="Write an Agent Kickoff Pack (primer + prompt header + manifest) to a dir.",
+    )
+    bp_bundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the pack into (parent must exist).",
+    )
+    bp_bundle.add_argument(
+        "--force", action="store_true", help="Overwrite pack files in a non-empty output dir."
+    )
+    bp_bundle.add_argument("--claim", dest="claim_id", help="Filter to this claim id")
+    bp_bundle.add_argument("--session", dest="session_id", help="Filter to this session id")
+    bp_bundle.add_argument("--status", help="Filter claims by exact latest_status")
+    bp_bundle.add_argument(
+        "--task-kind", dest="task_kind", help="Filter tool notes and candidates by task_kind"
+    )
+    bp_bundle.add_argument("--tag", dest="tag", help="Filter tool notes and candidates by tag")
+    bp_bundle.add_argument("--thread-dir", dest="thread_dir", help="Review thread directory")
+    bp_bundle.add_argument(
+        "--since", dest="since", help="Diff this snapshot id vs latest (requires --thread-dir)."
+    )
+    bp_bundle.add_argument(
+        "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
+    )
+    bp_bundle.add_argument(
+        "--limit-candidates", dest="limit_candidates", type=int,
+        help="Max candidate lessons (>=0).",
+    )
+    bp_bundle.add_argument("--memory-dir")
+
+    bp_inspect = bp_sub.add_parser(
+        "inspect", help="Verify an Agent Kickoff Pack manifest (file existence + sha256 + bytes)."
+    )
+    bp_inspect.add_argument("pack_dir", help="Kickoff pack directory containing manifest.json")
+    bp_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     branch_primer_parser.set_defaults(command="branch-primer")
 
     tool_notes_parser = subparsers.add_parser(
@@ -4474,9 +4520,19 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
     and writes nothing to the memory store; ``--output`` writes only the named
     file. Not a correctness, safety, approval, merge, or production-readiness signal.
     """
+    bpc = getattr(parsed, "branch_primer_command", None)
+    if bpc == "bundle":
+        return _branch_primer_bundle(parsed)
+    if bpc == "inspect":
+        return _branch_primer_inspect(parsed)
+
     from datetime import UTC, datetime
 
-    from chimera_memory.branch_primer import build_branch_primer, render_branch_primer_markdown
+    from chimera_memory.branch_primer import (
+        build_branch_primer,
+        render_branch_primer_markdown,
+        render_prompt_header,
+    )
     from chimera_memory.work_packet import ThreadError
 
     memory_dir = getattr(parsed, "memory_dir", None)
@@ -4501,13 +4557,16 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
             task_kind=getattr(parsed, "task_kind", None),
             tag=getattr(parsed, "tag", None),
             thread_dir=Path(thread_dir) if thread_dir else None,
+            since=getattr(parsed, "since", None),
             limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
             limit_candidates=getattr(parsed, "limit_candidates", None),
         )
     except ThreadError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
         return 2
-    if parsed.json:
+    if getattr(parsed, "prompt_header", False):
+        content = render_prompt_header(primer)
+    elif parsed.json:
         content = json.dumps(primer.to_dict(), sort_keys=True)
     else:
         content = render_branch_primer_markdown(primer, store_label=store_label)
@@ -4522,6 +4581,67 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
         return 0
     print(content)
     return 0
+
+
+def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
+    """Write an Agent Kickoff Pack to an explicit directory. Read-only on the store."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.branch_primer import (
+        PackError,
+        build_branch_primer,
+        write_kickoff_pack,
+    )
+    from chimera_memory.work_packet import ThreadError
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    try:
+        store_label = str(store.memory_dir.relative_to(Path.cwd()))
+    except ValueError:
+        store_label = store.memory_dir.name
+    thread_dir = getattr(parsed, "thread_dir", None)
+    try:
+        primer = build_branch_primer(
+            store,
+            generated_at=datetime.now(UTC).isoformat(),
+            store_label=store_label,
+            claim_id=getattr(parsed, "claim_id", None),
+            session_id=getattr(parsed, "session_id", None),
+            status=getattr(parsed, "status", None),
+            task_kind=getattr(parsed, "task_kind", None),
+            tag=getattr(parsed, "tag", None),
+            thread_dir=Path(thread_dir) if thread_dir else None,
+            since=getattr(parsed, "since", None),
+            limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
+            limit_candidates=getattr(parsed, "limit_candidates", None),
+        )
+        manifest = write_kickoff_pack(
+            primer, output_dir=Path(parsed.bundle_output_dir), store_label=store_label,
+            force=getattr(parsed, "force", False),
+        )
+    except (ThreadError, PackError) as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+    names = ", ".join(f["path"] for f in manifest["files"]) + ", manifest.json"
+    print(f"Agent kickoff pack written to {parsed.bundle_output_dir} (5 files: {names})")
+    return 0
+
+
+def _branch_primer_inspect(parsed: argparse.Namespace) -> int:
+    """Verify an Agent Kickoff Pack manifest (existence + sha256 + bytes). Read-only."""
+    from chimera_memory.work_packet import inspect_bundle, render_inspect_text
+
+    result = inspect_bundle(Path(parsed.pack_dir))
+    if getattr(parsed, "json", False):
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(render_inspect_text(result))
+    return 0 if result["valid"] else 1
 
 
 def _tool_notes(parsed: argparse.Namespace) -> int:
