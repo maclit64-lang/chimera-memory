@@ -1039,3 +1039,69 @@ def test_mcp_work_brief_no_forbidden_phrases(tmp_path: Path) -> None:
     low = blob.lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── work session (read-only MCP tools) ───────────────────────────────────────
+
+def _seed_session(tmp_path: Path) -> str:
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_session import (
+        append_session_event,
+        build_session_event,
+        make_session_id,
+    )
+    store = MemoryStore.from_paths(root=tmp_path)
+    sid = make_session_id(created_at="2026-06-25T10:00:00+00:00", brief_id="brief_x")
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="started", brief_id="brief_x", tags=("v0.29",),
+        created_at="2026-06-25T10:00:00+00:00"))
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="closed", status="blocked",
+        created_at="2026-06-25T10:00:05+00:00"))
+    return sid
+
+
+def test_mcp_work_session_tools_listed_read_only() -> None:
+    names = {t["name"] for t in list_tools(_ro())}
+    assert "chimera_work_session_list" in names
+    assert "chimera_work_session_show" in names
+
+
+def test_mcp_work_session_start_attach_close_not_exposed() -> None:
+    names = {t["name"] for t in list_tools(_rw())}
+    for n in ("chimera_work_session_start", "chimera_work_session_attach_snapshot",
+              "chimera_work_session_close"):
+        assert n not in names  # writes stay CLI-only
+
+
+def test_mcp_work_session_list_and_show(tmp_path: Path) -> None:
+    sid = _seed_session(tmp_path)
+    lst = call_tool("chimera_work_session_list", {}, perms=_ro(), root=tmp_path)
+    assert lst["schema_version"] == 1 and len(lst["sessions"]) == 1
+    assert len(call_tool("chimera_work_session_list", {"status": "blocked"},
+                         perms=_ro(), root=tmp_path)["sessions"]) == 1
+    assert len(call_tool("chimera_work_session_list", {"tag": "v0.29", "limit": 5},
+                         perms=_ro(), root=tmp_path)["sessions"]) == 1
+    show = call_tool("chimera_work_session_show", {"session_id": sid}, perms=_ro(), root=tmp_path)
+    assert set(show) == {"schema_version", "session", "events"}
+    assert show["session"]["status"] == "blocked" and len(show["events"]) == 2
+    missing = call_tool("chimera_work_session_show", {"session_id": "sess_nope"},
+                        perms=_ro(), root=tmp_path)
+    assert missing["session"] is None and missing["events"] == []
+
+
+def test_mcp_work_session_no_store_creation(tmp_path: Path) -> None:
+    call_tool("chimera_work_session_list", {}, perms=_ro(), root=tmp_path)
+    call_tool("chimera_work_session_show", {"session_id": "x"}, perms=_ro(), root=tmp_path)
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_work_session_no_forbidden_phrases(tmp_path: Path) -> None:
+    _seed_session(tmp_path)
+    blob = ""
+    for name in ("chimera_work_session_list", "chimera_work_session_show"):
+        blob += next(x for x in list_tools(_ro()) if x["name"] == name)["description"]
+    blob += json.dumps(call_tool("chimera_work_session_list", {}, perms=_ro(), root=tmp_path))
+    low = blob.lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"

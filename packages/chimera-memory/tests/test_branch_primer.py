@@ -573,3 +573,104 @@ def test_bundle_without_brief_unchanged(
     names = sorted(p.name for p in out_dir.iterdir())
     assert "WORK_BRIEF.md" not in names and "work-brief.json" not in names
     assert "Work brief: none" in (out_dir / "README.md").read_text(encoding="utf-8")
+
+
+# ── v0.29: Work Session integration (--work-session) ─────────────────────────
+
+def _start_session(tmp_path: Path, *, with_snapshot: bool) -> str:
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    from chimera_memory.work_session import (
+        append_session_event,
+        build_session_event,
+        make_session_id,
+    )
+    store = MemoryStore.from_paths(root=tmp_path)
+    brief = build_work_brief(title="Session brief", objective="Do it.", task_kind="memory-feature",
+                             scope_paths=("src",), tags=("v0.29",))
+    add_work_brief(store, brief)
+    sid = make_session_id(created_at="2026-06-25T10:00:00+00:00", brief_id=brief.brief_id)
+    td = tmp_path / "review-thread" if with_snapshot else None
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="started", brief_id=brief.brief_id,
+        thread_dir=str(td) if td else None, created_at="2026-06-25T10:00:00+00:00"))
+    if with_snapshot and td is not None:
+        add_thread_snapshot(build_work_packet(store, generated_at="2026-06-25T10:00:00+00:00"),
+                            thread_dir=td, store_label="ws", now=_T0, label="first")
+        from chimera_memory.work_packet import read_thread_index
+        snap = read_thread_index(td)["snapshots"][0]["snapshot_id"]  # type: ignore[index]
+        append_session_event(store, build_session_event(
+            session_id=sid, event_kind="snapshot_attached", thread_dir=str(td),
+            snapshot_id=snap, created_at="2026-06-25T10:00:05+00:00"))
+    return sid
+
+
+def test_branch_primer_work_session_includes_context(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sid = _start_session(tmp_path, with_snapshot=True)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--json", "--work-session", sid,
+                     "--memory-dir", str(mem))
+    assert code == 0
+    d = json.loads(out)
+    assert d["work_brief"]["title"] == "Session brief"  # brief from session
+    assert d["filters"]["thread_dir"] is not None  # thread from session
+    assert any("Attached snapshot" in x for x in d["suggested_first_read"])
+
+
+def test_branch_primer_work_session_prompt_header(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sid = _start_session(tmp_path, with_snapshot=False)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--prompt-header", "--work-session", sid,
+                     "--memory-dir", str(mem))
+    assert code == 0
+    assert "Task brief:" in out
+
+
+def test_branch_primer_work_session_missing_exits_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mem = tmp_path / ".chimera-memory"
+    mem.mkdir()
+    code, _ = _run(capsys, "branch-primer", "--work-session", "sess_nope",
+                   "--memory-dir", str(mem))
+    assert code == 2
+
+
+def test_branch_primer_claim_session_filter_still_works(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_notes_and_activity(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--json", "--session", "s1", "--memory-dir", str(mem))
+    assert code == 0
+    assert json.loads(out)["filters"]["session_id"] == "s1"
+
+
+def test_branch_primer_work_session_thread_not_materialized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A session may reference a thread_dir that doesn't exist yet; the primer must
+    # not hard-fail (the thread is a soft association, unlike an explicit --thread-dir).
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    from chimera_memory.work_session import (
+        append_session_event,
+        build_session_event,
+        make_session_id,
+    )
+    store = MemoryStore.from_paths(root=tmp_path)
+    brief = build_work_brief(title="T", objective="O", task_kind="memory-feature")
+    add_work_brief(store, brief)
+    sid = make_session_id(created_at="2026-06-25T10:00:00+00:00", brief_id=brief.brief_id)
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="started", brief_id=brief.brief_id,
+        thread_dir="never-created-thread", created_at="2026-06-25T10:00:00+00:00"))
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--json", "--work-session", sid,
+                     "--memory-dir", str(mem))
+    assert code == 0
+    d = json.loads(out)
+    assert d["work_brief"]["title"] == "T"
+    assert d["filters"]["thread_dir"] is None  # not materialized -> soft-dropped

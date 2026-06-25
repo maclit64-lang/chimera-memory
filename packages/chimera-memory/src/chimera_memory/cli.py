@@ -843,6 +843,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Include this exact work brief id (task contract) in the primer.",
     )
     branch_primer_parser.add_argument(
+        "--work-session", dest="work_session_id",
+        help="Resolve this work session (its brief / thread / attached snapshots).",
+    )
+    branch_primer_parser.add_argument(
         "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
     )
     branch_primer_parser.add_argument(
@@ -880,6 +884,10 @@ def _build_parser() -> argparse.ArgumentParser:
     bp_bundle.add_argument(
         "--brief", dest="brief_id",
         help="Include this exact work brief id (adds WORK_BRIEF.md + work-brief.json).",
+    )
+    bp_bundle.add_argument(
+        "--work-session", dest="work_session_id",
+        help="Resolve this work session (its brief / thread / attached snapshots).",
     )
     bp_bundle.add_argument(
         "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
@@ -950,6 +958,67 @@ def _build_parser() -> argparse.ArgumentParser:
     wb_show.add_argument("--markdown", action="store_true", help="Emit the markdown brief")
     wb_show.add_argument("--memory-dir")
     work_brief_parser.set_defaults(command="work-brief")
+
+    work_session_parser = subparsers.add_parser(
+        "work-session",
+        help="Local task lifecycle envelope linking a brief, kickoff context, and snapshots.",
+    )
+    ws_sub = work_session_parser.add_subparsers(dest="work_session_command")
+
+    ws_start = ws_sub.add_parser("start", help="Start a session from a work brief.")
+    ws_start.add_argument("--brief", dest="brief_id", help="Exact work brief id (required).")
+    ws_start.add_argument("--thread-dir", dest="thread_dir", help="Associated review thread dir.")
+    ws_start.add_argument(
+        "--kickoff-pack-dir", dest="kickoff_pack_dir",
+        help="If set, also write an Agent Kickoff Pack here (parent must exist).",
+    )
+    ws_start.add_argument("--tag", action="append", dest="tags", default=[], help="Tag.")
+    ws_start.add_argument("--note", dest="note", help="Short note recorded on the event.")
+    ws_start.add_argument("--source", default="cli")
+    ws_start.add_argument("--memory-dir")
+
+    ws_list = ws_sub.add_parser("list", help="List sessions (folded from events).")
+    ws_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ws_list.add_argument("--status", help="Exact status filter (open/blocked/closed/unknown)")
+    ws_list.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
+    ws_list.add_argument("--limit", dest="ws_limit", type=int, help="Max sessions (>=0).")
+    ws_list.add_argument("--memory-dir")
+
+    ws_show = ws_sub.add_parser("show", help="Show one session by exact session_id.")
+    ws_show.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ws_show.add_argument("--markdown", action="store_true", help="Emit the markdown session")
+    ws_show.add_argument("--memory-dir")
+
+    ws_attach_snap = ws_sub.add_parser(
+        "attach-snapshot", help="Attach a review-thread snapshot to a session."
+    )
+    ws_attach_snap.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_attach_snap.add_argument("--thread-dir", dest="thread_dir", required=True,
+                                help="Review thread directory.")
+    ws_attach_snap.add_argument("--snapshot-id", dest="snapshot_id", required=True,
+                                help="Exact snapshot id (wp_...).")
+    ws_attach_snap.add_argument("--note", dest="note")
+    ws_attach_snap.add_argument("--memory-dir")
+
+    ws_attach_art = ws_sub.add_parser(
+        "attach-artifact", help="Attach an artifact reference (path or label) to a session."
+    )
+    ws_attach_art.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_attach_art.add_argument("--artifact-ref", dest="artifact_ref", required=True,
+                               help="Path or label of the artifact.")
+    ws_attach_art.add_argument("--note", dest="note")
+    ws_attach_art.add_argument("--memory-dir")
+
+    ws_close = ws_sub.add_parser("close", help="Close a session with a neutral status.")
+    ws_close.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_close.add_argument(
+        "--status", dest="status", default="closed",
+        help="Neutral status: open/blocked/closed/unknown (default: closed).",
+    )
+    ws_close.add_argument("--note", dest="note")
+    ws_close.add_argument("--memory-dir")
+    work_session_parser.set_defaults(command="work-session")
 
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
@@ -1873,6 +1942,8 @@ def main(argv: list[str] | None = None) -> int:
         return _branch_primer(parsed)
     if parsed.command == "work-brief":
         return _work_brief(parsed)
+    if parsed.command == "work-session":
+        return _work_session(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -4592,6 +4663,31 @@ def _resolve_brief_dict(
     return wb.to_dict(), None
 
 
+def _resolve_session_context(
+    store: MemoryStore, session_id: str | None
+) -> tuple[str | None, str | None, tuple[str, ...], int | None]:
+    """Resolve --session to (brief_id, thread_dir, extra_first_read, exit_code_or_None)."""
+    if not session_id:
+        return None, None, (), None
+    from chimera_memory.work_session import find_session
+
+    sess = find_session(store, session_id)
+    if sess is None:
+        print(f"error: no work session with id {session_id!r}", file=__import__("sys").stderr)
+        return None, None, (), 2
+    extra = tuple(f"Attached snapshot: {sid}" for sid in sess.snapshot_ids)
+    # The session's thread is an association that may not be materialized yet; only
+    # use it as primer context if the review thread actually exists (soft, unlike an
+    # explicit --thread-dir which must exist).
+    thread_dir = sess.thread_dir
+    if thread_dir is not None:
+        from chimera_memory.work_packet import read_thread_index
+
+        if read_thread_index(Path(thread_dir)) is None:
+            thread_dir = None
+    return sess.brief_id, thread_dir, extra, None
+
+
 def _brief_files_for(work_brief_dict: dict[str, object] | None) -> dict[str, str] | None:
     """Render the WORK_BRIEF.md / work-brief.json pack files from a brief dict."""
     if work_brief_dict is None:
@@ -4637,7 +4733,15 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     thread_dir = getattr(parsed, "thread_dir", None)
-    work_brief_dict, brief_err = _resolve_brief_dict(store, getattr(parsed, "brief_id", None))
+    sess_brief_id, sess_thread_dir, extra_first_read, sess_err = _resolve_session_context(
+        store, getattr(parsed, "work_session_id", None)
+    )
+    if sess_err is not None:
+        return sess_err
+    thread_dir = sess_thread_dir or thread_dir
+    work_brief_dict, brief_err = _resolve_brief_dict(
+        store, sess_brief_id or getattr(parsed, "brief_id", None)
+    )
     if brief_err is not None:
         return brief_err
     try:
@@ -4655,6 +4759,7 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
             limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
             limit_candidates=getattr(parsed, "limit_candidates", None),
             work_brief=work_brief_dict,
+            extra_first_read=extra_first_read,
         )
     except ThreadError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
@@ -4700,7 +4805,15 @@ def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     thread_dir = getattr(parsed, "thread_dir", None)
-    work_brief_dict, brief_err = _resolve_brief_dict(store, getattr(parsed, "brief_id", None))
+    sess_brief_id, sess_thread_dir, extra_first_read, sess_err = _resolve_session_context(
+        store, getattr(parsed, "work_session_id", None)
+    )
+    if sess_err is not None:
+        return sess_err
+    thread_dir = sess_thread_dir or thread_dir
+    work_brief_dict, brief_err = _resolve_brief_dict(
+        store, sess_brief_id or getattr(parsed, "brief_id", None)
+    )
     if brief_err is not None:
         return brief_err
     try:
@@ -4718,6 +4831,7 @@ def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
             limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
             limit_candidates=getattr(parsed, "limit_candidates", None),
             work_brief=work_brief_dict,
+            extra_first_read=extra_first_read,
         )
         manifest = write_kickoff_pack(
             primer, output_dir=Path(parsed.bundle_output_dir), store_label=store_label,
@@ -4831,6 +4945,165 @@ def _work_brief(parsed: argparse.Namespace) -> int:
 
     print("error: a work-brief subcommand is required (add/list/show)",
           file=__import__("sys").stderr)
+    return 2
+
+
+def _work_session(parsed: argparse.Namespace) -> int:
+    """Local task lifecycle envelope: start/attach/close (writes) and list/show (read-only).
+
+    Event-sourced; not a correctness, safety, approval, merge, or production-readiness signal.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.work_session import (
+        SCHEMA_VERSION,
+        append_session_event,
+        build_session_event,
+        events_for_session,
+        filter_sessions,
+        find_session,
+        make_session_id,
+        render_session_markdown,
+        sessions_for_store,
+    )
+
+    sub = getattr(parsed, "work_session_command", None)
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    err = __import__("sys").stderr
+
+    if sub == "start":
+        brief_id = getattr(parsed, "brief_id", None)
+        if not brief_id:
+            print("error: work-session start requires --brief", file=err)
+            return 2
+        from chimera_memory.work_brief import find_work_brief
+        brief = find_work_brief(store, brief_id)
+        if brief is None:
+            print(f"error: no work brief with id {brief_id!r}", file=err)
+            return 2
+        now = datetime.now(UTC).isoformat()
+        session_id = make_session_id(created_at=now, brief_id=brief_id)
+        thread_dir = getattr(parsed, "thread_dir", None)
+        kickoff_pack_dir = getattr(parsed, "kickoff_pack_dir", None)
+        if kickoff_pack_dir:
+            from chimera_memory.branch_primer import (
+                PackError,
+                build_branch_primer,
+                write_kickoff_pack,
+            )
+            from chimera_memory.work_packet import ThreadError
+            try:
+                store_label = str(store.memory_dir.relative_to(Path.cwd()))
+            except ValueError:
+                store_label = store.memory_dir.name
+            try:
+                primer = build_branch_primer(
+                    store, generated_at=now, store_label=store_label,
+                    work_brief=brief.to_dict(),
+                )
+                write_kickoff_pack(
+                    primer, output_dir=Path(kickoff_pack_dir), store_label=store_label,
+                    brief_files=_brief_files_for(brief.to_dict()),
+                )
+            except (ThreadError, PackError) as exc:
+                print(f"error: {exc}", file=err)
+                return 2
+        append_session_event(store, build_session_event(
+            session_id=session_id, event_kind="started", brief_id=brief_id,
+            thread_dir=thread_dir, kickoff_pack_dir=kickoff_pack_dir,
+            tags=tuple(getattr(parsed, "tags", []) or []),
+            note=getattr(parsed, "note", None),
+            source=getattr(parsed, "source", "cli") or "cli", created_at=now,
+        ))
+        print(session_id)
+        return 0
+
+    if sub == "list":
+        sessions = filter_sessions(
+            sessions_for_store(store),
+            status=getattr(parsed, "status", None),
+            tag=getattr(parsed, "tag", None),
+        )
+        limit = getattr(parsed, "ws_limit", None)
+        if limit is not None:
+            sessions = sessions[: max(limit, 0)]
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": SCHEMA_VERSION, "sessions": [s.to_dict() for s in sessions]},
+                sort_keys=True,
+            ))
+        else:
+            if not sessions:
+                print("No work sessions.")
+            for s in sessions:
+                print(f"- {s.session_id} [{s.status}] brief={s.brief_id or '(none)'}")
+        return 0
+
+    if sub == "show":
+        sess = find_session(store, parsed.session_id)
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "session": sess.to_dict() if sess else None,
+                    "events": [e.to_dict() for e in events_for_session(store, parsed.session_id)],
+                },
+                sort_keys=True,
+            ))
+        elif sess is None:
+            print(f"No work session with id {parsed.session_id!r}.")
+        else:
+            print(render_session_markdown(sess, events_for_session(store, parsed.session_id)))
+        return 0
+
+    if sub in ("attach-snapshot", "attach-artifact", "close"):
+        sess = find_session(store, parsed.session_id)
+        if sess is None:
+            print(f"error: no work session with id {parsed.session_id!r}", file=err)
+            return 2
+        if sub == "attach-snapshot":
+            from chimera_memory.work_packet import read_thread_index
+            thread_dir = parsed.thread_dir
+            index = read_thread_index(Path(thread_dir))
+            known = {s["snapshot_id"] for s in (index or {}).get("snapshots", [])}
+            if index is None or parsed.snapshot_id not in known:
+                print(f"error: unknown snapshot id {parsed.snapshot_id!r} in {thread_dir}",
+                      file=err)
+                return 2
+            append_session_event(store, build_session_event(
+                session_id=parsed.session_id, event_kind="snapshot_attached",
+                thread_dir=thread_dir, snapshot_id=parsed.snapshot_id,
+                note=getattr(parsed, "note", None),
+            ))
+            print(f"Attached snapshot {parsed.snapshot_id} to {parsed.session_id}")
+            return 0
+        if sub == "attach-artifact":
+            append_session_event(store, build_session_event(
+                session_id=parsed.session_id, event_kind="artifact_attached",
+                artifact_refs=(parsed.artifact_ref,), note=getattr(parsed, "note", None),
+            ))
+            print(f"Attached artifact to {parsed.session_id}")
+            return 0
+        # close
+        try:
+            event = build_session_event(
+                session_id=parsed.session_id, event_kind="closed",
+                status=getattr(parsed, "status", "closed"), note=getattr(parsed, "note", None),
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        append_session_event(store, event)
+        print(f"Closed {parsed.session_id} (status={event.status})")
+        return 0
+
+    print("error: a work-session subcommand is required "
+          "(start/list/show/attach-snapshot/attach-artifact/close)", file=err)
     return 2
 
 

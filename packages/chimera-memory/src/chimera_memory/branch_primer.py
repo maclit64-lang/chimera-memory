@@ -183,6 +183,7 @@ def build_branch_primer(
     limit_tool_notes: int | None = None,
     limit_candidates: int | None = None,
     work_brief: dict[str, Any] | None = None,
+    extra_first_read: tuple[str, ...] = (),
 ) -> BranchPrimer:
     """Compose a BranchPrimer from the local ledger (and an optional review thread).
 
@@ -272,6 +273,7 @@ def build_branch_primer(
                 packet, store_label=store_label, thread_dir=thread_dir,
                 latest_snapshot=latest_snapshot,
             )
+            + list(extra_first_read)
         ),
     )
 

@@ -604,6 +604,46 @@ _TOOLS = [
         required=["brief_id"],
         permission="read",
     ),
+    _tool(
+        name="chimera_work_session_list",
+        description=(
+            "List local Agent Work Sessions (folded from events) by exact status/tag with an "
+            "optional limit. Read-only: never writes or creates a store. Advisory — local task "
+            "lifecycle context; not a correctness, safety, approval, merge, production-readiness, "
+            "or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "status": {"type": "string", "description": "Exact status filter (optional)."},
+            "tag": {"type": "string", "description": "Exact tag filter (optional)."},
+            "limit": {"type": "integer", "description": "Max sessions after filters (>=0)."},
+        },
+        required=[],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_work_session_show",
+        description=(
+            "Show one local Agent Work Session (projection + events) by exact session_id. "
+            "Read-only: never writes or creates a store; returns session:null when unknown. "
+            "Advisory — local task lifecycle context; not a correctness, safety, approval, "
+            "merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "session_id": {"type": "string", "description": "Exact session id (sess_...)."},
+        },
+        required=["session_id"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1181,6 +1221,38 @@ def _tool_work_brief_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]
     }
 
 
+def _tool_work_session_list(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: list local work sessions by exact status/tag. Never writes."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_session import filter_sessions, sessions_for_store
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    sessions = filter_sessions(
+        sessions_for_store(store), status=args.get("status"), tag=args.get("tag")
+    )
+    raw_limit = args.get("limit")
+    if isinstance(raw_limit, int) and not isinstance(raw_limit, bool):
+        sessions = sessions[: max(raw_limit, 0)]
+    return {"schema_version": 1, "sessions": [s.to_dict() for s in sessions]}
+
+
+def _tool_work_session_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: show one work session (projection + events) by exact id. Never writes."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_session import events_for_session, find_session
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    session_id = args.get("session_id") or ""
+    session = find_session(store, session_id)
+    return {
+        "schema_version": 1,
+        "session": session.to_dict() if session else None,
+        "events": [e.to_dict() for e in events_for_session(store, session_id)],
+    }
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1214,6 +1286,12 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_work_brief_list": lambda a, *, root, perms: _tool_work_brief_list(a, root=root),
     "chimera_work_brief_show": lambda a, *, root, perms: _tool_work_brief_show(a, root=root),
+    "chimera_work_session_list": (
+        lambda a, *, root, perms: _tool_work_session_list(a, root=root)
+    ),
+    "chimera_work_session_show": (
+        lambda a, *, root, perms: _tool_work_session_show(a, root=root)
+    ),
 }
 
 
