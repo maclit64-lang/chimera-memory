@@ -115,11 +115,33 @@ Chimera Memory is in public alpha for developers using AI coding agents.
 It is a local-first CLI that records what an AI coding agent claimed before editing, runs your real checks, settles the result, and generates `PR_EVIDENCE.md` for review.
 
 ```bash
-pip install chimera-memory==0.27.0
+pip install chimera-memory==0.28.0
 chimera-memory demo
 ```
 
 Start here: [docs/public-alpha.md](../../docs/public-alpha.md)
+
+## Operational memory and Work Packets
+
+Beyond evidence receipts, Chimera Memory records **local operational memory** — how
+agents worked — and packages it for review. Everything here is local and advisory;
+none of it is a correctness, safety, approval, merge, or production-readiness signal.
+
+- **Tool Notes** — manual, local, reusable lessons about how a tool or workflow
+  worked on a kind of task (`tool-notes add/list/suggest/show`). Exact-match recall;
+  never inferred or ranked.
+- **Tool Activity** — append-only records of local tool/workflow activity
+  (`tool-activity add/list`).
+- **Candidate Lessons** — review-before-save lessons projected from recorded
+  activity (`tool-notes candidates`); saving one is always a manual `tool-notes add`.
+- **Work Packets** — one portable advisory artifact (Markdown or JSON) that gathers
+  claims, open items, tool lessons, and candidate lessons (`work-packet`), with
+  exportable, hash-manifested **bundles** (`work-packet bundle` / `inspect` / `diff`).
+- **Review Threads** — a local timeline that collects packet snapshots over time
+  (`work-packet thread add/list/inspect/diff-latest/diff`).
+
+See [docs/tool-notes.md](../../docs/tool-notes.md) and
+[docs/work-packet.md](../../docs/work-packet.md).
 
 ## Install
 

@@ -1,7 +1,7 @@
-"""Stage 0: version coherence for the canonical v0.27.0 RC.
+"""Stage 0: version coherence for the canonical v0.28.0 RC.
 
 Guards that the CLI/dist version, the pyproject version, and the
-types-dependency floor agree, and that this is the 0.27 line. Robust
+types-dependency floor agree, and that this is the 0.28 line. Robust
 to a coordinated patch bump (it asserts the dist and pyproject *agree*
 rather than hardcoding a full literal), while pinning the RC minor so
 a stray version drift is caught.
@@ -28,17 +28,17 @@ def test_dist_version_matches_pyproject() -> None:
     assert dist == proj, f"installed dist version {dist!r} != pyproject {proj!r}"
 
 
-def test_canonical_is_the_0_27_line() -> None:
+def test_canonical_is_the_0_28_line() -> None:
     proj = _pyproject()["project"]["version"]
-    assert proj.startswith("0.27"), f"expected the 0.27 RC line, got {proj!r}"
+    assert proj.startswith("0.28"), f"expected the 0.28 RC line, got {proj!r}"
 
 
 def test_types_dependency_floor_coheres() -> None:
     deps = _pyproject()["project"]["dependencies"]
     matches = [d for d in deps if "chimera-memory-types" in d]
     assert matches, "chimera-memory-types must be a declared dependency"
-    assert any("0.27" in d for d in matches), (
-        f"types dependency floor should track the 0.27 line, got {matches!r}"
+    assert any("0.28" in d for d in matches), (
+        f"types dependency floor should track the 0.28 line, got {matches!r}"
     )
 
 
