@@ -652,7 +652,7 @@ def test_mcp_activity_add_writes_only_activity_file_then_candidates(tmp_path: Pa
     assert files == ["tool_activity.jsonl"]
     c = call_tool("chimera_tool_note_candidates", {"task_kind": "large-repo-forensics"},
                   perms=_ro(), root=tmp_path)
-    assert set(c) == {"schema_version", "advisory", "candidates"}
+    assert set(c) == {"schema_version", "advisory", "filters", "candidates"}
     assert len(c["candidates"]) == 1
     assert c["candidates"][0]["lesson"] == "did X."
 
@@ -670,5 +670,73 @@ def test_mcp_activity_no_forbidden_phrases(tmp_path: Path) -> None:
                   perms=_rw(), root=tmp_path)
     c = call_tool("chimera_tool_note_candidates", {}, perms=_ro(), root=tmp_path)
     blob = (ta["description"] + tc["description"] + json.dumps(r) + json.dumps(c)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── candidate read improvements (filters / limit / show) ─────────────────────
+
+def _seed_two_activities(tmp_path: Path) -> None:
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_activity(store, build_tool_activity(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout", summary="did A", tags=("repo-forensics",)))
+    add_tool_activity(store, build_tool_activity(
+        task_kind="quick-fix", tool_name="single-agent",
+        workflow_name="direct-edit", summary="did B", tags=("small",)))
+
+
+def test_mcp_candidates_supports_filters_and_limit(tmp_path: Path) -> None:
+    _seed_two_activities(tmp_path)
+
+    def count(args: dict[str, object]) -> int:
+        return len(call_tool("chimera_tool_note_candidates", args, perms=_ro(),
+                             root=tmp_path)["candidates"])
+
+    assert count({}) == 2
+    assert count({"tool_name": "single-agent"}) == 1
+    assert count({"workflow_name": "unit-card-specialist-fanout"}) == 1
+    assert count({"tag": "repo-forensics"}) == 1
+    assert count({"task_kind": "large-repo-forensics", "tag": "small"}) == 0  # AND
+    assert count({"limit": 1}) == 1
+    assert count({"limit": 0}) == 0
+    c = call_tool("chimera_tool_note_candidates", {"tool_name": "single-agent", "limit": 5},
+                  perms=_ro(), root=tmp_path)
+    assert c["filters"] == {"task_kind": None, "tool_name": "single-agent",
+                            "workflow_name": None, "tag": None, "limit": 5}
+
+
+def test_mcp_candidate_show_listed_read_only() -> None:
+    assert "chimera_tool_note_candidate_show" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_candidate_show_found_and_missing(tmp_path: Path) -> None:
+    _seed_two_activities(tmp_path)
+    cid = call_tool("chimera_tool_note_candidates", {"task_kind": "quick-fix"},
+                    perms=_ro(), root=tmp_path)["candidates"][0]["candidate_id"]
+    found = call_tool("chimera_tool_note_candidate_show", {"candidate_id": cid},
+                      perms=_ro(), root=tmp_path)
+    assert set(found) == {"schema_version", "candidate", "found"}
+    assert found["found"] is True
+    assert found["candidate"]["candidate_id"] == cid
+    missing = call_tool("chimera_tool_note_candidate_show", {"candidate_id": "cand_nope"},
+                        perms=_ro(), root=tmp_path)
+    assert missing == {"schema_version": 1, "candidate": None, "found": False}
+
+
+def test_mcp_candidate_show_does_not_create_store(tmp_path: Path) -> None:
+    r = call_tool("chimera_tool_note_candidate_show", {"candidate_id": "cand_x"},
+                  perms=_ro(), root=tmp_path)
+    assert r["found"] is False
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_candidate_show_no_forbidden_phrases(tmp_path: Path) -> None:
+    t = next(x for x in list_tools(_ro()) if x["name"] == "chimera_tool_note_candidate_show")
+    r = call_tool("chimera_tool_note_candidate_show", {"candidate_id": "cand_x"},
+                  perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(r)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"

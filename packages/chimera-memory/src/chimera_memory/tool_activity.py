@@ -186,6 +186,7 @@ def filter_tool_activities(
     *,
     task_kind: str | None = None,
     tool_name: str | None = None,
+    workflow_name: str | None = None,
     tag: str | None = None,
 ) -> list[ToolActivity]:
     """Exact-match filter (AND across provided criteria). No fuzzy matching."""
@@ -194,6 +195,7 @@ def filter_tool_activities(
         for a in activities
         if (task_kind is None or a.task_kind == task_kind)
         and (tool_name is None or a.tool_name == tool_name)
+        and (workflow_name is None or a.workflow_name == workflow_name)
         and (tag is None or tag in a.tags)
     ]
 
@@ -287,6 +289,41 @@ def candidates_for_root(
     if task_kind is not None:
         activities = filter_tool_activities(activities, task_kind=task_kind)
     return project_candidates(activities)
+
+
+def select_candidates(
+    store: MemoryStore,
+    *,
+    task_kind: str | None = None,
+    tool_name: str | None = None,
+    workflow_name: str | None = None,
+    tag: str | None = None,
+    limit: int | None = None,
+) -> list[CandidateLesson]:
+    """Read-only: exact-filter activities, project candidates, then apply limit.
+
+    Filters combine with AND; limit applies after filtering; stored order, no
+    ranking. ``limit`` is clamped to >= 0 (0 -> empty).
+    """
+    activities = filter_tool_activities(
+        read_tool_activities(store),
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=workflow_name,
+        tag=tag,
+    )
+    candidates = project_candidates(activities)
+    if limit is not None:
+        candidates = candidates[: max(limit, 0)]
+    return candidates
+
+
+def find_candidate(store: MemoryStore, candidate_id: str) -> CandidateLesson | None:
+    """Read-only: return the projected candidate with this exact id, or None."""
+    for candidate in project_candidates(read_tool_activities(store)):
+        if candidate.candidate_id == candidate_id:
+            return candidate
+    return None
 
 
 def render_candidates_text(candidates: list[CandidateLesson]) -> str:

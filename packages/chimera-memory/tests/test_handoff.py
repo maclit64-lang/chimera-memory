@@ -37,6 +37,7 @@ _FORBIDDEN = (
 _TOP_KEYS = {
     "schema_version", "advisory", "filters", "event_count", "settled_claim_count",
     "claims", "open_or_unresolved", "next_inspection_targets", "tool_notes",
+    "candidate_tool_lessons",
 }
 
 
@@ -436,3 +437,75 @@ def test_handoff_limit_tool_notes(tmp_path: Path) -> None:
     assert handoff_for_root(tmp_path, task_kind="A", tool_note_limit=0).tool_notes == ()
     # limit does not disturb the claim view
     assert handoff_for_root(tmp_path, task_kind="A", tool_note_limit=1).settled_claim_count == 2
+
+
+# --- candidate tool lessons (quiet by default) ------------------------------
+
+def _seed_activity(root: Path) -> None:
+    from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
+    store = MemoryStore.from_paths(root=root)
+    add_tool_activity(store, build_tool_activity(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout",
+        summary="7 agents synthesized 31 Unit Cards after 100% file coverage.",
+        evidence="2189/2189 files read.", caveat="High cost/time.",
+        tags=("repo-forensics",)))
+
+
+def test_handoff_candidates_quiet_without_filter(tmp_path: Path) -> None:
+    _seed_activity(tmp_path)
+    summary = handoff_for_root(tmp_path)
+    assert summary.candidate_tool_lessons == ()
+    assert summary.to_dict()["candidate_tool_lessons"] == []
+
+
+def test_handoff_candidates_present_with_matching_filter(tmp_path: Path) -> None:
+    _seed_activity(tmp_path)
+    summary = handoff_for_root(tmp_path, candidate_task_kind="large-repo-forensics")
+    assert len(summary.candidate_tool_lessons) == 1
+    cand = summary.to_dict()["candidate_tool_lessons"][0]
+    assert cand["lesson"] == "7 agents synthesized 31 Unit Cards after 100% file coverage."
+
+
+def test_handoff_candidates_non_matching_filter_is_empty(tmp_path: Path) -> None:
+    _seed_activity(tmp_path)
+    summary = handoff_for_root(tmp_path, candidate_task_kind="nope")
+    assert summary.candidate_tool_lessons == ()
+    summary2 = handoff_for_root(tmp_path, candidate_tag="missing")
+    assert summary2.candidate_tool_lessons == ()
+
+
+def test_handoff_candidate_limit_applies(tmp_path: Path) -> None:
+    from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
+    store = MemoryStore.from_paths(root=tmp_path)
+    for i in range(3):
+        add_tool_activity(store, build_tool_activity(
+            task_kind="k", tool_name="t", workflow_name="w", summary=f"s{i}", tags=("z",)))
+    summary = handoff_for_root(tmp_path, candidate_tag="z", candidate_limit=2)
+    assert len(summary.candidate_tool_lessons) == 2
+
+
+def test_handoff_markdown_candidate_section_only_with_filter(tmp_path: Path) -> None:
+    _seed_activity(tmp_path)
+    quiet = render_markdown(
+        handoff_for_root(tmp_path), store_label="x", generated_at="t")
+    assert "## Candidate tool lessons" not in quiet
+    shown = render_markdown(
+        handoff_for_root(tmp_path, candidate_task_kind="large-repo-forensics"),
+        store_label="x", generated_at="t")
+    assert "## Candidate tool lessons" in shown
+    assert "Review before saving as Tool Notes." in shown
+    assert "Candidate lesson: 7 agents synthesized 31 Unit Cards" in shown
+
+
+def test_handoff_cli_candidate_flags(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    mem = tmp_path / ".chimera-memory"
+    _run(capsys, "tool-activity", "add", "--task-kind", "large-repo-forensics",
+         "--tool", "parallel-agents", "--workflow", "unit-card-specialist-fanout",
+         "--summary", "did big synthesis", "--tag", "repo-forensics", "--memory-dir", str(mem))
+    _, out = _run(capsys, "handoff", "--json", "--memory-dir", str(mem))
+    assert json.loads(out)["candidate_tool_lessons"] == []  # quiet
+    _, out = _run(capsys, "handoff", "--json", "--candidate-task-kind",
+                  "large-repo-forensics", "--candidate-limit", "5", "--memory-dir", str(mem))
+    cands = json.loads(out)["candidate_tool_lessons"]
+    assert len(cands) == 1 and cands[0]["lesson"] == "did big synthesis"

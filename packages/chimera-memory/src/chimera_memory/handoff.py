@@ -20,6 +20,7 @@ from typing import Any
 from chimera_memory.evidence_events import project_evidence_events
 from chimera_memory.settled_claims import SettledClaim, fold_settled_claims
 from chimera_memory.storage import MemoryStore
+from chimera_memory.tool_activity import CandidateLesson, select_candidates
 from chimera_memory.tool_notes import ToolNote, filter_tool_notes, read_tool_notes
 
 SCHEMA_VERSION = 1
@@ -119,6 +120,7 @@ class HandoffSummary:
     open_or_unresolved: tuple[HandoffOpenItem, ...]
     next_inspection_targets: tuple[HandoffTarget, ...]
     tool_notes: tuple[ToolNote, ...]
+    candidate_tool_lessons: tuple[CandidateLesson, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +133,7 @@ class HandoffSummary:
             "open_or_unresolved": [o.to_dict() for o in self.open_or_unresolved],
             "next_inspection_targets": [t.to_dict() for t in self.next_inspection_targets],
             "tool_notes": [n.to_dict() for n in self.tool_notes],
+            "candidate_tool_lessons": [c.to_dict() for c in self.candidate_tool_lessons],
         }
 
 
@@ -160,6 +163,9 @@ def build_handoff(
     workflow_name: str | None = None,
     tag: str | None = None,
     tool_note_limit: int | None = None,
+    candidate_task_kind: str | None = None,
+    candidate_tag: str | None = None,
+    candidate_limit: int | None = None,
 ) -> HandoffSummary:
     """Build a HandoffSummary from the local ledger. Read-only.
 
@@ -230,6 +236,17 @@ def build_handoff(
     if tool_note_limit is not None:
         matched_notes = matched_notes[: max(tool_note_limit, 0)]
 
+    # Candidate lessons are quiet by default: surfaced only when a candidate
+    # filter is supplied (and only those that match).
+    candidate_filter_given = candidate_task_kind is not None or candidate_tag is not None
+    candidate_lessons = (
+        select_candidates(
+            store, task_kind=candidate_task_kind, tag=candidate_tag, limit=candidate_limit
+        )
+        if candidate_filter_given
+        else []
+    )
+
     return HandoffSummary(
         schema_version=SCHEMA_VERSION,
         advisory=ADVISORY,
@@ -248,6 +265,7 @@ def build_handoff(
         open_or_unresolved=tuple(open_items),
         next_inspection_targets=tuple(targets),
         tool_notes=tuple(matched_notes),
+        candidate_tool_lessons=tuple(candidate_lessons),
     )
 
 
@@ -262,6 +280,9 @@ def handoff_for_root(
     workflow_name: str | None = None,
     tag: str | None = None,
     tool_note_limit: int | None = None,
+    candidate_task_kind: str | None = None,
+    candidate_tag: str | None = None,
+    candidate_limit: int | None = None,
 ) -> HandoffSummary:
     """Convenience wrapper: build a handoff for a repo root's ``.chimera-memory``."""
     return build_handoff(
@@ -274,6 +295,9 @@ def handoff_for_root(
         workflow_name=workflow_name,
         tag=tag,
         tool_note_limit=tool_note_limit,
+        candidate_task_kind=candidate_task_kind,
+        candidate_tag=candidate_tag,
+        candidate_limit=candidate_limit,
     )
 
 
@@ -350,5 +374,18 @@ def render_markdown(
                 lines.append(f"  Evidence: {n.evidence}")
             if n.caveat:
                 lines.append(f"  Caveat: {n.caveat}")
+        lines.append("")
+    if summary.candidate_tool_lessons:
+        lines.append("## Candidate tool lessons")
+        lines.append("")
+        lines.append("Advisory only. Review before saving as Tool Notes.")
+        lines.append("")
+        for cand in summary.candidate_tool_lessons:
+            lines.append(f"- [{cand.task_kind}] {cand.tool_name} / {cand.workflow_name}")
+            lines.append(f"  Candidate lesson: {cand.lesson}")
+            if cand.evidence:
+                lines.append(f"  Evidence: {cand.evidence}")
+            if cand.caveat:
+                lines.append(f"  Caveat: {cand.caveat}")
         lines.append("")
     return "\n".join(lines)

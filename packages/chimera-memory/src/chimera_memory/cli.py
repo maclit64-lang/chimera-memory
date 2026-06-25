@@ -646,6 +646,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit-tool-notes", dest="tool_note_limit", type=int,
         help="Max tool lessons to include (>=0).",
     )
+    handoff_parser.add_argument(
+        "--candidate-task-kind", dest="candidate_task_kind",
+        help="Surface candidate tool lessons with this exact task_kind (advisory).",
+    )
+    handoff_parser.add_argument(
+        "--candidate-tag", dest="candidate_tag",
+        help="Surface candidate tool lessons with this exact tag (advisory).",
+    )
+    handoff_parser.add_argument(
+        "--candidate-limit", dest="candidate_limit", type=int,
+        help="Max candidate tool lessons to include (>=0).",
+    )
     handoff_parser.add_argument("--memory-dir")
     handoff_parser.set_defaults(command="handoff")
 
@@ -693,7 +705,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tn_candidates.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     tn_candidates.add_argument("--task-kind", dest="task_kind", help="Exact task_kind filter")
+    tn_candidates.add_argument("--tool", dest="tool_name", help="Exact tool_name filter")
+    tn_candidates.add_argument("--workflow", dest="workflow_name", help="Exact workflow filter")
+    tn_candidates.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
+    tn_candidates.add_argument("--limit", dest="cand_limit", type=int, help="Max candidates (>=0).")
     tn_candidates.add_argument("--memory-dir")
+    tn_cand_sub = tn_candidates.add_subparsers(dest="candidates_command")
+    tn_cand_show = tn_cand_sub.add_parser("show", help="Show one candidate by exact candidate_id")
+    tn_cand_show.add_argument("candidate_id", help="Exact candidate id (cand_...)")
+    tn_cand_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    tn_cand_show.add_argument("--memory-dir")
     tool_notes_parser.set_defaults(command="tool-notes")
 
     tool_activity_parser = subparsers.add_parser(
@@ -1102,6 +1123,14 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument(
         "--tag", dest="preflight_tn_tag",
         help="Surface tool lessons matching this exact tag (advisory).",
+    )
+    preflight_parser.add_argument(
+        "--candidate-task-kind", dest="preflight_cand_task_kind",
+        help="Surface candidate tool lessons matching this exact task_kind (advisory).",
+    )
+    preflight_parser.add_argument(
+        "--candidate-tag", dest="preflight_cand_tag",
+        help="Surface candidate tool lessons matching this exact tag (advisory).",
     )
     preflight_parser.add_argument("--json", action="store_true")
     preflight_parser.set_defaults(command="preflight")
@@ -1658,6 +1687,7 @@ def _preflight(parsed: argparse.Namespace) -> int:
         validate_verification_scope,
     )
     from chimera_memory.preflight import build_preflight, format_preflight_text
+    from chimera_memory.tool_activity import render_candidates_text, select_candidates
     from chimera_memory.tool_notes import (
         filter_tool_notes,
         read_tool_notes,
@@ -1708,6 +1738,17 @@ def _preflight(parsed: argparse.Namespace) -> int:
         else []
     )
 
+    # Read-only candidate advisory. Quiet by default — surfaced only when an
+    # exact-match candidate filter is supplied; never auto-saves or ranks.
+    cand_task_kind = getattr(parsed, "preflight_cand_task_kind", None)
+    cand_tag = getattr(parsed, "preflight_cand_tag", None)
+    cand_filter_given = cand_task_kind is not None or cand_tag is not None
+    cand_matched = (
+        select_candidates(store, task_kind=cand_task_kind, tag=cand_tag)
+        if cand_filter_given
+        else []
+    )
+
     if parsed.json:
         payload = report.to_dict()
         payload["tool_note_advisory"] = {
@@ -1720,11 +1761,21 @@ def _preflight(parsed: argparse.Namespace) -> int:
             },
             "tool_notes": [n.to_dict() for n in tn_matched],
         }
+        payload["candidate_tool_lesson_advisory"] = {
+            "schema_version": 1,
+            "filters": {
+                "task_kind": cand_task_kind,
+                "tag": cand_tag,
+            },
+            "candidates": [c.to_dict() for c in cand_matched],
+        }
         print(json.dumps(payload, sort_keys=True))
     else:
         text = format_preflight_text(report)
         if tn_matched:
             text = text + "\n\n" + render_preflight_tool_lessons(tn_matched)
+        if cand_matched:
+            text = text + "\n\n" + render_candidates_text(cand_matched)
         print(text)
     return 0
 
@@ -3975,6 +4026,9 @@ def _handoff(parsed: argparse.Namespace) -> int:
         workflow_name=getattr(parsed, "workflow_name", None),
         tag=getattr(parsed, "tag", None),
         tool_note_limit=getattr(parsed, "tool_note_limit", None),
+        candidate_task_kind=getattr(parsed, "candidate_task_kind", None),
+        candidate_tag=getattr(parsed, "candidate_tag", None),
+        candidate_limit=getattr(parsed, "candidate_limit", None),
     )
     if parsed.json:
         print(json.dumps(summary.to_dict(), sort_keys=True))
@@ -4110,22 +4164,52 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
     if sub == "candidates":
         from chimera_memory.tool_activity import (
             CANDIDATE_ADVISORY,
-            filter_tool_activities,
-            project_candidates,
-            read_tool_activities,
+            find_candidate,
             render_candidates_text,
+            select_candidates,
         )
 
+        if getattr(parsed, "candidates_command", None) == "show":
+            cand = find_candidate(store, parsed.candidate_id)
+            if getattr(parsed, "json", False):
+                print(json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "candidate": cand.to_dict() if cand else None,
+                        "found": cand is not None,
+                    },
+                    sort_keys=True,
+                ))
+            elif cand is None:
+                print(f"No candidate with id {parsed.candidate_id!r}.")
+            else:
+                print(render_candidates_text([cand]))
+            return 0
         task_kind = getattr(parsed, "task_kind", None)
-        activities = read_tool_activities(store)
-        if task_kind is not None:
-            activities = filter_tool_activities(activities, task_kind=task_kind)
-        candidates = project_candidates(activities)
+        tool_name = getattr(parsed, "tool_name", None)
+        workflow_name = getattr(parsed, "workflow_name", None)
+        tag = getattr(parsed, "tag", None)
+        cand_limit = getattr(parsed, "cand_limit", None)
+        candidates = select_candidates(
+            store,
+            task_kind=task_kind,
+            tool_name=tool_name,
+            workflow_name=workflow_name,
+            tag=tag,
+            limit=cand_limit,
+        )
         if getattr(parsed, "json", False):
             print(json.dumps(
                 {
                     "schema_version": SCHEMA_VERSION,
                     "advisory": CANDIDATE_ADVISORY,
+                    "filters": {
+                        "task_kind": task_kind,
+                        "tool_name": tool_name,
+                        "workflow_name": workflow_name,
+                        "tag": tag,
+                        "limit": cand_limit,
+                    },
                     "candidates": [c.to_dict() for c in candidates],
                 },
                 sort_keys=True,

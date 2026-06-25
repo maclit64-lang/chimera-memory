@@ -117,17 +117,57 @@ chimera-memory tool-activity list --json
 chimera-memory tool-notes candidates --json --task-kind large-repo-forensics
 ```
 
+Review candidates by exact filters (`--task-kind` / `--tool` / `--workflow` / `--tag`, AND
+across filters) with an optional `--limit` (applied after filtering; stored order, no ranking):
+
+```bash
+chimera-memory tool-notes candidates --tool parallel-agents
+chimera-memory tool-notes candidates --workflow unit-card-specialist-fanout
+chimera-memory tool-notes candidates --json --task-kind large-repo-forensics --tag orchestration --limit 5
+```
+
+Inspect one candidate by exact id:
+
+```bash
+chimera-memory tool-notes candidates show cand_<id>
+chimera-memory tool-notes candidates show cand_<id> --json
+# -> {"schema_version": 1, "candidate": {…} | null, "found": true | false}
+```
+
 The candidate lesson is the activity's `summary` verbatim — a starting point to review and
-rewrite before saving via `tool-notes add` (the manual save path). Candidate JSON:
+rewrite before saving via `tool-notes add` (the manual save path). Candidate JSON echoes the
+applied filters:
 
 ```json
-{"schema_version": 1, "advisory": "candidate local operational lessons only; review before saving", "candidates": [ … ]}
+{
+  "schema_version": 1,
+  "advisory": "candidate local operational lessons only; review before saving",
+  "filters": {"task_kind": null, "tool_name": null, "workflow_name": null, "tag": null, "limit": null},
+  "candidates": [ … ]
+}
 ```
+
+### Handoff and preflight surfacing
+
+`handoff` and `preflight` can surface matching candidates, **quiet by default** — a candidate
+section appears only when a candidate filter is supplied and matches:
+
+```bash
+chimera-memory handoff --candidate-task-kind large-repo-forensics --candidate-limit 5
+chimera-memory preflight --candidate-task-kind large-repo-forensics
+```
+
+`handoff` adds a `candidate_tool_lessons` JSON field (empty unless a candidate filter is given)
+and a `## Candidate tool lessons` markdown section. `preflight` adds a
+`candidate_tool_lesson_advisory` object at the CLI layer; the receipt bundle is unchanged.
 
 ### MCP
 
-- `chimera_tool_note_candidates` — read-only; projects candidates by exact `task_kind` (optional).
+- `chimera_tool_note_candidates` — read-only; projects candidates by exact
+  `task_kind` / `tool_name` / `workflow_name` / `tag` (all optional, AND) with optional `limit`.
   Available without `--allow-write`; never creates a store.
+- `chimera_tool_note_candidate_show` — read-only; exact `candidate_id` lookup; returns
+  `found: false` when unknown. Available without `--allow-write`; never creates a store.
 - `chimera_tool_activity_add` — **write-gated** (requires `--allow-write`); appends one activity
   to `tool_activity.jsonl`.
 

@@ -137,3 +137,87 @@ def test_preflight_advisory_no_forbidden_phrases(
     blob = (section + advisory_json + help_text).lower()
     for phrase in _FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# --- candidate advisory (quiet by default) ----------------------------------
+
+def _seed_activity(root: Path) -> None:
+    from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
+    store = MemoryStore.from_paths(root=root)
+    add_tool_activity(store, build_tool_activity(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout",
+        summary="did big synthesis", evidence="2189 files", caveat="costly",
+        tags=("repo-forensics",)))
+
+
+def test_preflight_candidate_present_with_filter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_activity(tmp_path)
+    _, out = _run(capsys, monkeypatch, tmp_path, "preflight", "--json",
+                  "--candidate-task-kind", "large-repo-forensics")
+    adv = json.loads(out)["candidate_tool_lesson_advisory"]
+    assert adv["schema_version"] == 1
+    assert set(adv["filters"]) == {"task_kind", "tag"}
+    assert len(adv["candidates"]) == 1
+    assert adv["candidates"][0]["lesson"] == "did big synthesis"
+
+
+def test_preflight_candidate_quiet_without_filter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_activity(tmp_path)
+    _, out = _run(capsys, monkeypatch, tmp_path, "preflight", "--json")
+    adv = json.loads(out)["candidate_tool_lesson_advisory"]
+    assert adv["candidates"] == []
+    assert adv["filters"] == {"task_kind": None, "tag": None}
+
+
+def test_preflight_candidate_non_matching_filter_empty(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_activity(tmp_path)
+    _, out = _run(capsys, monkeypatch, tmp_path, "preflight", "--json",
+                  "--candidate-tag", "nope")
+    assert json.loads(out)["candidate_tool_lesson_advisory"]["candidates"] == []
+
+
+def test_preflight_candidate_text_section_only_with_filter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_activity(tmp_path)
+    _, quiet = _run(capsys, monkeypatch, tmp_path, "preflight")
+    assert "Candidate tool lessons" not in quiet
+    _, shown = _run(capsys, monkeypatch, tmp_path, "preflight",
+                    "--candidate-task-kind", "large-repo-forensics")
+    assert "Candidate tool lessons" in shown
+    assert "did big synthesis" in shown
+
+
+def test_preflight_candidate_bundle_keys_untouched(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_activity(tmp_path)
+    _, out = _run(capsys, monkeypatch, tmp_path, "preflight", "--json",
+                  "--candidate-task-kind", "large-repo-forensics")
+    d = json.loads(out)
+    # candidate advisory is additive; tool_note_advisory and core keys remain
+    assert "candidate_tool_lesson_advisory" in d
+    assert "tool_note_advisory" in d
+    assert "recommended_checks" in d
+
+
+def test_preflight_candidate_read_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_activity(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    _run(capsys, monkeypatch, tmp_path, "preflight", "--candidate-task-kind",
+         "large-repo-forensics")
+    _run(capsys, monkeypatch, tmp_path, "preflight", "--json", "--candidate-tag",
+         "repo-forensics")
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after
+    assert not (mem / "tool_notes.jsonl").exists()

@@ -335,10 +335,11 @@ _TOOLS = [
         name="chimera_tool_note_candidates",
         description=(
             "Project candidate tool lessons from recorded tool activity, by exact "
-            "task_kind (optional). Read-only: never writes, creates a store, saves a "
-            "Tool Note, runs commands, or calls models. Advisory — candidate local "
-            "operational lessons to review before saving; not a correctness, safety, "
-            "approval, merge, production-readiness, or speed guarantee."
+            "task_kind/tool_name/workflow_name/tag (all optional, AND) with optional "
+            "limit. Read-only: never writes, creates a store, saves a Tool Note, runs "
+            "commands, or calls models. Advisory — candidate local operational lessons "
+            "to review before saving; not a correctness, safety, approval, merge, "
+            "production-readiness, or speed guarantee."
         ),
         properties={
             "root": {
@@ -347,8 +348,35 @@ _TOOLS = [
                 "default": ".",
             },
             "task_kind": {"type": "string", "description": "Exact task_kind filter (optional)."},
+            "tool_name": {"type": "string", "description": "Exact tool_name filter (optional)."},
+            "workflow_name": {
+                "type": "string",
+                "description": "Exact workflow_name filter (optional).",
+            },
+            "tag": {"type": "string", "description": "Exact tag filter (optional)."},
+            "limit": {"type": "integer", "description": "Max candidates after filters (>=0)."},
         },
         required=[],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_tool_note_candidate_show",
+        description=(
+            "Look up one candidate tool lesson by exact candidate_id. Read-only: never "
+            "writes, creates a store, saves a Tool Note, runs commands, or calls models. "
+            "Returns found:false when absent. Advisory — candidate local operational "
+            "lesson to review before saving; not a correctness, safety, approval, merge, "
+            "production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "candidate_id": {"type": "string", "description": "Exact candidate id (cand_...)."},
+        },
+        required=["candidate_id"],
         permission="read",
     ),
 ]
@@ -701,24 +729,50 @@ def _tool_tool_activity_add(args: dict[str, Any], *, root: Path) -> dict[str, An
 def _tool_tool_note_candidates(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
     """Read-only: project candidate tool lessons from activity. Never writes."""
     from chimera_memory.storage import MemoryStore
-    from chimera_memory.tool_activity import (
-        CANDIDATE_ADVISORY,
-        filter_tool_activities,
-        project_candidates,
-        read_tool_activities,
-    )
+    from chimera_memory.tool_activity import CANDIDATE_ADVISORY, select_candidates
 
     arg_root = args.get("root")
     store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
-    activities = read_tool_activities(store)
     task_kind = args.get("task_kind")
-    if task_kind is not None:
-        activities = filter_tool_activities(activities, task_kind=task_kind)
-    candidates = project_candidates(activities)
+    tool_name = args.get("tool_name")
+    workflow_name = args.get("workflow_name")
+    tag = args.get("tag")
+    raw_limit = args.get("limit")
+    limit = int(raw_limit) if isinstance(raw_limit, int) else None
+    candidates = select_candidates(
+        store,
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=workflow_name,
+        tag=tag,
+        limit=limit,
+    )
     return {
         "schema_version": 1,
         "advisory": CANDIDATE_ADVISORY,
+        "filters": {
+            "task_kind": task_kind,
+            "tool_name": tool_name,
+            "workflow_name": workflow_name,
+            "tag": tag,
+            "limit": limit,
+        },
         "candidates": [c.to_dict() for c in candidates],
+    }
+
+
+def _tool_tool_note_candidate_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: look up one candidate by exact candidate_id. Never writes."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_activity import find_candidate
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    candidate = find_candidate(store, args.get("candidate_id") or "")
+    return {
+        "schema_version": 1,
+        "candidate": candidate.to_dict() if candidate else None,
+        "found": candidate is not None,
     }
 
 
@@ -735,6 +789,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_tool_activity_add": lambda a, *, root, perms: _tool_tool_activity_add(a, root=root),
     "chimera_tool_note_candidates": (
         lambda a, *, root, perms: _tool_tool_note_candidates(a, root=root)
+    ),
+    "chimera_tool_note_candidate_show": (
+        lambda a, *, root, perms: _tool_tool_note_candidate_show(a, root=root)
     ),
 }
 

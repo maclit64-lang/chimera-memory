@@ -134,7 +134,8 @@ def test_cli_candidates_json_readonly_no_tool_notes(
                      "--task-kind", "large-repo-forensics", "--memory-dir", str(mem))
     assert code == 0
     d = json.loads(out)
-    assert set(d) == {"schema_version", "advisory", "candidates"}
+    assert set(d) == {"schema_version", "advisory", "filters", "candidates"}
+    assert set(d["filters"]) == {"task_kind", "tool_name", "workflow_name", "tag", "limit"}
     assert len(d["candidates"]) == 1
     assert set(d["candidates"][0]) == _CANDIDATE_KEYS
     assert d["candidates"][0]["lesson"] == "did X."
@@ -179,3 +180,115 @@ def test_no_forbidden_phrases_activity_candidates(
     low = blob.lower()
     for phrase in _FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# --- candidate selection / lookup (module) ----------------------------------
+
+def _seed_two(store: MemoryStore) -> None:
+    add_tool_activity(store, build_tool_activity(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout", summary="did A", tags=("repo-forensics",)))
+    add_tool_activity(store, build_tool_activity(
+        task_kind="quick-fix", tool_name="single-agent",
+        workflow_name="direct-edit", summary="did B", tags=("small",)))
+
+
+def test_select_candidates_filters_and_and_limit(tmp_path: Path) -> None:
+    from chimera_memory.tool_activity import select_candidates
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    assert len(select_candidates(store)) == 2
+    assert len(select_candidates(store, task_kind="large-repo-forensics")) == 1
+    assert len(select_candidates(store, tool_name="single-agent")) == 1
+    assert len(select_candidates(store, workflow_name="unit-card-specialist-fanout")) == 1
+    assert len(select_candidates(store, tag="repo-forensics")) == 1
+    # AND: a task_kind from one activity with a tag from the other -> no match
+    assert select_candidates(store, task_kind="large-repo-forensics", tag="small") == []
+    # limit applies after filtering
+    assert len(select_candidates(store, limit=1)) == 1
+    assert select_candidates(store, limit=0) == []
+
+
+def test_find_candidate_found_and_missing(tmp_path: Path) -> None:
+    from chimera_memory.tool_activity import find_candidate, select_candidates
+    store = MemoryStore.from_paths(root=tmp_path)
+    _seed_two(store)
+    cid = select_candidates(store, task_kind="quick-fix")[0].candidate_id
+    found = find_candidate(store, cid)
+    assert found is not None and found.candidate_id == cid
+    assert find_candidate(store, "cand_does_not_exist") is None
+
+
+# --- candidate CLI: filters / limit / show ----------------------------------
+
+def test_cli_candidates_filters_and_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mem = tmp_path / ".chimera-memory"
+    _run(capsys, "tool-activity", "add", "--task-kind", "large-repo-forensics",
+         "--tool", "parallel-agents", "--workflow", "unit-card-specialist-fanout",
+         "--summary", "did A", "--tag", "repo-forensics", "--memory-dir", str(mem))
+    _run(capsys, "tool-activity", "add", "--task-kind", "quick-fix", "--tool", "single-agent",
+         "--workflow", "direct-edit", "--summary", "did B", "--tag", "small",
+         "--memory-dir", str(mem))
+
+    def count(*args: str) -> int:
+        _, out = _run(capsys, "tool-notes", "candidates", "--json", *args,
+                      "--memory-dir", str(mem))
+        return len(json.loads(out)["candidates"])
+
+    assert count() == 2
+    assert count("--tool", "single-agent") == 1
+    assert count("--workflow", "unit-card-specialist-fanout") == 1
+    assert count("--tag", "repo-forensics") == 1
+    assert count("--task-kind", "large-repo-forensics", "--tag", "small") == 0  # AND
+    assert count("--limit", "1") == 1
+    assert count("--limit", "0") == 0
+    # filters object echoes the applied query
+    _, out = _run(capsys, "tool-notes", "candidates", "--json", "--tool", "single-agent",
+                  "--limit", "5", "--memory-dir", str(mem))
+    filters = json.loads(out)["filters"]
+    assert filters == {"task_kind": None, "tool_name": "single-agent",
+                       "workflow_name": None, "tag": None, "limit": 5}
+
+
+def test_cli_candidates_show_found_and_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mem = tmp_path / ".chimera-memory"
+    _run(capsys, "tool-activity", "add", "--task-kind", "large-repo-forensics",
+         "--tool", "parallel-agents", "--workflow", "unit-card-specialist-fanout",
+         "--summary", "did X.", "--memory-dir", str(mem))
+    _, out = _run(capsys, "tool-notes", "candidates", "--json", "--memory-dir", str(mem))
+    cid = json.loads(out)["candidates"][0]["candidate_id"]
+
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    code, out = _run(capsys, "tool-notes", "candidates", "show", cid, "--json",
+                     "--memory-dir", str(mem))
+    assert code == 0
+    d = json.loads(out)
+    assert set(d) == {"schema_version", "candidate", "found"}
+    assert d["found"] is True
+    assert d["candidate"]["candidate_id"] == cid
+    assert d["candidate"]["lesson"] == "did X."
+
+    code, out = _run(capsys, "tool-notes", "candidates", "show", "cand_nope", "--json",
+                     "--memory-dir", str(mem))
+    assert code == 0
+    d = json.loads(out)
+    assert d == {"schema_version": 1, "candidate": None, "found": False}
+
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after  # show is read-only
+    assert not (mem / "tool_notes.jsonl").exists()  # never creates Tool Notes
+
+
+def test_cli_candidates_show_missing_no_store_creation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mem = tmp_path / ".chimera-memory"  # never created
+    code, out = _run(capsys, "tool-notes", "candidates", "show", "cand_x", "--json",
+                     "--memory-dir", str(mem))
+    assert code == 0
+    assert json.loads(out)["found"] is False
+    assert not mem.exists()  # read of absent store creates nothing
