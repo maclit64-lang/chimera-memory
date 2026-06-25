@@ -209,6 +209,33 @@ _TOOLS = [
         required=[],
         permission="write",
     ),
+    _tool(
+        name="chimera_tool_notes_suggest",
+        description=(
+            "Suggest local tool/workflow lessons (agent skill memory) by exact match "
+            "on task_kind / tool_name / workflow_name / tag (omit all to return every "
+            "note). Read-only: never writes, creates a store, runs commands, spawns "
+            "agents, or calls models. Exact-match with AND across filters; stored order, "
+            "no ranking. Advisory — local operational lessons only; not a correctness, "
+            "safety, approval, merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root to read .chimera-memory from (default: server root).",
+                "default": ".",
+            },
+            "task_kind": {"type": "string", "description": "Exact task_kind filter (optional)."},
+            "tool_name": {"type": "string", "description": "Exact tool_name filter (optional)."},
+            "workflow_name": {
+                "type": "string",
+                "description": "Exact workflow_name filter (optional).",
+            },
+            "tag": {"type": "string", "description": "Exact tag filter, membership (optional)."},
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -402,6 +429,45 @@ def _tool_xray(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
     }
 
 
+def _tool_tool_notes_suggest(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: suggest local tool/workflow lessons by exact-match filters.
+
+    Never writes, creates a store, runs commands, or calls models. Reuses the
+    same exact-match filter as the CLI; stored order, no ranking.
+    """
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_notes import filter_tool_notes, read_tool_notes
+
+    arg_root = args.get("root")
+    store_root = Path(arg_root) if arg_root else root
+    store = MemoryStore.from_paths(root=store_root)
+    task_kind = args.get("task_kind")
+    tool_name = args.get("tool_name")
+    workflow_name = args.get("workflow_name")
+    tag = args.get("tag")
+    matched = filter_tool_notes(
+        read_tool_notes(store),
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=workflow_name,
+        tag=tag,
+    )
+    return {
+        "schema_version": 1,
+        "advisory": (
+            "local operational lessons only; not a correctness, safety, approval, "
+            "merge, production-readiness, or speed guarantee"
+        ),
+        "filters": {
+            "task_kind": task_kind,
+            "tool_name": tool_name,
+            "workflow_name": workflow_name,
+            "tag": tag,
+        },
+        "suggestions": [n.to_dict() for n in matched],
+    }
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -409,6 +475,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_list": lambda a, *, root, perms: _tool_claim_list(a, root=root),
     "chimera_claim_settle": lambda a, *, root, perms: _tool_settle(a, root=root),
     "chimera_xray_generate": lambda a, *, root, perms: _tool_xray(a, root=root),
+    "chimera_tool_notes_suggest": lambda a, *, root, perms: _tool_tool_notes_suggest(a, root=root),
 }
 
 

@@ -16,6 +16,8 @@ from chimera_memory.mcp_server import (
     serve_mcp,
 )
 from chimera_memory.cli import main
+from chimera_memory.storage import MemoryStore
+from chimera_memory.tool_notes import add_tool_note, build_tool_note
 
 _PASS = [sys.executable, "-c", "import sys; sys.exit(0)"]
 
@@ -375,3 +377,112 @@ def test_mcp_protocol_call_validate(repo: Path, monkeypatch) -> None:
     call_resp = json.loads(output_lines[1])
     result = json.loads(call_resp["result"]["content"][0]["text"])
     assert result["ok"] is True
+
+
+# ── Stage 5: tool-notes advisory (read-only MCP tool) ────────────────────────
+
+_TN_FORBIDDEN = (
+    "safe to merge", "production ready", "production-ready", "certified",
+    "approved", "guaranteed", "proves correctness", "proves safety",
+    "trusted", "proof-carrying", "proof", "optimal", "guaranteed faster",
+)
+
+
+def _seed_notes(root: Path) -> None:
+    store = MemoryStore.from_paths(root=root)
+    add_tool_note(store, build_tool_note(
+        task_kind="large-repo-forensics", tool_name="parallel-agents",
+        workflow_name="unit-card-specialist-fanout", lesson="Use manifests first.",
+        tags=("repo-forensics", "orchestration"),
+    ))
+    add_tool_note(store, build_tool_note(
+        task_kind="quick-fix", tool_name="single-agent",
+        workflow_name="direct-edit", tags=("small",),
+    ))
+
+
+def test_tool_notes_suggest_listed_read_only() -> None:
+    tools = {t["name"] for t in list_tools(_ro())}
+    assert "chimera_tool_notes_suggest" in tools
+
+
+def test_tool_notes_suggest_schema_exposes_filters() -> None:
+    t = next(t for t in list_tools(_ro()) if t["name"] == "chimera_tool_notes_suggest")
+    props = set(t["inputSchema"]["properties"])
+    assert {"task_kind", "tool_name", "workflow_name", "tag"} <= props
+    assert t["inputSchema"]["required"] == []
+    assert "_permission" not in t
+
+
+def test_tool_notes_suggest_by_task_kind(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)
+    r = call_tool("chimera_tool_notes_suggest", {"task_kind": "large-repo-forensics"},
+                  perms=_ro(), root=tmp_path)
+    assert r["schema_version"] == 1
+    assert set(r) == {"schema_version", "advisory", "filters", "suggestions"}
+    assert set(r["filters"]) == {"task_kind", "tool_name", "workflow_name", "tag"}
+    assert len(r["suggestions"]) == 1
+    assert r["suggestions"][0]["tool_name"] == "parallel-agents"
+
+
+def test_tool_notes_suggest_by_tag_tool_workflow(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)
+
+    def count(args: dict) -> int:
+        return len(call_tool("chimera_tool_notes_suggest", args, perms=_ro(),
+                             root=tmp_path)["suggestions"])
+
+    assert count({"tag": "small"}) == 1
+    assert count({"tool_name": "parallel-agents"}) == 1
+    assert count({"workflow_name": "direct-edit"}) == 1
+
+
+def test_tool_notes_suggest_no_match_is_empty(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)
+    r = call_tool("chimera_tool_notes_suggest", {"task_kind": "nope"}, perms=_ro(), root=tmp_path)
+    assert r["suggestions"] == []
+    assert set(r) == {"schema_version", "advisory", "filters", "suggestions"}
+
+
+def test_tool_notes_suggest_is_read_only(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    before = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    call_tool("chimera_tool_notes_suggest", {"task_kind": "large-repo-forensics"},
+              perms=_ro(), root=tmp_path)
+    call_tool("chimera_tool_notes_suggest", {}, perms=_ro(), root=tmp_path)
+    after = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    assert before == after
+
+
+def test_tool_notes_suggest_does_not_create_store(tmp_path: Path) -> None:
+    r = call_tool("chimera_tool_notes_suggest", {"task_kind": "x"}, perms=_ro(), root=tmp_path)
+    assert r["suggestions"] == []
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_tool_notes_suggest_works_without_write_execute_flags(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)
+    r = call_tool("chimera_tool_notes_suggest", {}, perms=ToolPermissions(), root=tmp_path)
+    assert "error" not in r
+    assert len(r["suggestions"]) == 2
+
+
+def test_existing_write_execute_permissions_unchanged(tmp_path: Path) -> None:
+    ro_names = {t["name"] for t in list_tools(_ro())}
+    assert "chimera_tool_notes_suggest" in ro_names
+    assert "chimera_claim_lock_auto" not in ro_names  # still write-gated
+    assert "chimera_claim_settle" not in ro_names      # still execute-gated
+    err = call_tool("chimera_claim_lock_auto", {"intent": "x", "falsifiers": [["true"]]},
+                    perms=_ro(), root=tmp_path)
+    assert "error" in err and "allow-write" in err["error"]
+
+
+def test_tool_notes_suggest_no_forbidden_phrases(tmp_path: Path) -> None:
+    _seed_notes(tmp_path)
+    t = next(t for t in list_tools(_ro()) if t["name"] == "chimera_tool_notes_suggest")
+    r = call_tool("chimera_tool_notes_suggest", {"task_kind": "large-repo-forensics"},
+                  perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(r)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
