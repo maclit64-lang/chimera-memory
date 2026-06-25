@@ -34,7 +34,7 @@ _FORBIDDEN = (
 )
 _TOP_KEYS = {
     "schema_version", "artifact", "advisory", "generated_at", "filters", "summary",
-    "work_packet", "thread_delta", "next_inspection_targets", "tool_notes",
+    "work_packet", "thread_delta", "work_brief", "next_inspection_targets", "tool_notes",
     "candidate_tool_lessons", "suggested_first_read",
 }
 _SUMMARY_KEYS = {
@@ -479,3 +479,97 @@ def test_bundle_cli_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixture[st
     (out / "AGENT_PROMPT_HEADER.md").write_text("tampered", encoding="utf-8")
     code, _ = _run(capsys, "branch-primer", "inspect", str(out))
     assert code == 1
+
+
+# ── v0.29: Work Brief integration (--brief) ──────────────────────────────────
+
+def _add_brief(tmp_path: Path) -> str:
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    store = MemoryStore.from_paths(root=tmp_path)
+    brief = build_work_brief(
+        title="Implement Work Brief", objective="Add a local task brief.",
+        task_kind="memory-feature", scope_paths=("src", "tests"),
+        checks=("pytest",), done_criteria=("green",), tags=("v0.29",))
+    add_work_brief(store, brief)
+    return brief.brief_id
+
+
+def test_primer_without_brief_has_null_work_brief(tmp_path: Path) -> None:
+    _seed_notes_and_activity(tmp_path)
+    assert _primer(tmp_path).to_dict()["work_brief"] is None
+
+
+def test_primer_brief_includes_compact_object(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_notes_and_activity(tmp_path)
+    bid = _add_brief(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--json", "--brief", bid, "--memory-dir", str(mem))
+    assert code == 0
+    d = json.loads(out)
+    assert d["work_brief"]["brief_id"] == bid
+    assert d["work_brief"]["title"] == "Implement Work Brief"
+    code, out = _run(capsys, "branch-primer", "--brief", bid, "--memory-dir", str(mem))
+    assert "## Work brief" in out
+
+
+def test_primer_brief_missing_id_exits_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mem = tmp_path / ".chimera-memory"
+    mem.mkdir()
+    code, _ = _run(capsys, "branch-primer", "--brief", "brief_nope", "--memory-dir", str(mem))
+    assert code == 2
+
+
+def test_prompt_header_brief_includes_task_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_notes_and_activity(tmp_path)
+    bid = _add_brief(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--prompt-header", "--brief", bid,
+                     "--memory-dir", str(mem))
+    assert code == 0
+    assert "Task brief:" in out
+    assert "objective: Add a local task brief." in out
+    assert "scope: src, tests" in out
+
+
+def test_bundle_brief_includes_brief_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_notes_and_activity(tmp_path)
+    bid = _add_brief(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    out_dir = tmp_path / "pack"
+    code, _ = _run(capsys, "branch-primer", "bundle", "--output-dir", str(out_dir),
+                   "--brief", bid, "--memory-dir", str(mem))
+    assert code == 0
+    names = sorted(p.name for p in out_dir.iterdir())
+    assert "WORK_BRIEF.md" in names and "work-brief.json" in names
+    import hashlib
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest_names = [f["path"] for f in manifest["files"]]
+    assert "WORK_BRIEF.md" in manifest_names and "work-brief.json" in manifest_names
+    for entry in manifest["files"]:
+        data = (out_dir / entry["path"]).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == entry["sha256"]
+        assert len(data) == entry["bytes"]
+    assert inspect_bundle(out_dir)["valid"] is True
+    assert "Work brief: included" in (out_dir / "README.md").read_text(encoding="utf-8")
+
+
+def test_bundle_without_brief_unchanged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_notes_and_activity(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    out_dir = tmp_path / "pack"
+    code, _ = _run(capsys, "branch-primer", "bundle", "--output-dir", str(out_dir),
+                   "--memory-dir", str(mem))
+    assert code == 0
+    names = sorted(p.name for p in out_dir.iterdir())
+    assert "WORK_BRIEF.md" not in names and "work-brief.json" not in names
+    assert "Work brief: none" in (out_dir / "README.md").read_text(encoding="utf-8")

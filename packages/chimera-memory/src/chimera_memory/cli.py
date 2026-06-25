@@ -839,6 +839,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit a compact, pasteable agent prompt header (text only).",
     )
     branch_primer_parser.add_argument(
+        "--brief", dest="brief_id",
+        help="Include this exact work brief id (task contract) in the primer.",
+    )
+    branch_primer_parser.add_argument(
         "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
     )
     branch_primer_parser.add_argument(
@@ -874,6 +878,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--since", dest="since", help="Diff this snapshot id vs latest (requires --thread-dir)."
     )
     bp_bundle.add_argument(
+        "--brief", dest="brief_id",
+        help="Include this exact work brief id (adds WORK_BRIEF.md + work-brief.json).",
+    )
+    bp_bundle.add_argument(
         "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
     )
     bp_bundle.add_argument(
@@ -888,6 +896,60 @@ def _build_parser() -> argparse.ArgumentParser:
     bp_inspect.add_argument("pack_dir", help="Kickoff pack directory containing manifest.json")
     bp_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     branch_primer_parser.set_defaults(command="branch-primer")
+
+    work_brief_parser = subparsers.add_parser(
+        "work-brief",
+        help="Record/list a local task brief (objective, scope, constraints, checks, done).",
+    )
+    wb_sub = work_brief_parser.add_subparsers(dest="work_brief_command")
+
+    wb_add = wb_sub.add_parser("add", help="Record one local task brief (kickoff contract).")
+    wb_add.add_argument("--title", dest="title", help="Short task title (required).")
+    wb_add.add_argument("--objective", dest="objective", help="What the task is (required).")
+    wb_add.add_argument("--task-kind", dest="task_kind", help="Exact task kind (optional).")
+    wb_add.add_argument(
+        "--scope-path", action="append", dest="scope_paths", default=[],
+        help="In-scope path (repeatable).",
+    )
+    wb_add.add_argument(
+        "--out-of-scope-path", action="append", dest="out_of_scope_paths", default=[],
+        help="Out-of-scope path (repeatable).",
+    )
+    wb_add.add_argument(
+        "--constraint", action="append", dest="constraints", default=[],
+        help="Constraint the agent must respect (repeatable).",
+    )
+    wb_add.add_argument(
+        "--check", action="append", dest="checks", default=[],
+        help="Check to run/report (repeatable).",
+    )
+    wb_add.add_argument(
+        "--done", action="append", dest="done_criteria", default=[],
+        help="Done criterion (repeatable).",
+    )
+    wb_add.add_argument(
+        "--context-ref", action="append", dest="context_refs", default=[],
+        help="Starting-context reference (repeatable).",
+    )
+    wb_add.add_argument(
+        "--tag", action="append", dest="tags", default=[], help="Tag (repeatable)."
+    )
+    wb_add.add_argument("--source", default="manual")
+    wb_add.add_argument("--memory-dir")
+
+    wb_list = wb_sub.add_parser("list", help="List recorded work briefs.")
+    wb_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    wb_list.add_argument("--task-kind", dest="task_kind", help="Exact task_kind filter")
+    wb_list.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
+    wb_list.add_argument("--limit", dest="wb_limit", type=int, help="Max briefs (>=0).")
+    wb_list.add_argument("--memory-dir")
+
+    wb_show = wb_sub.add_parser("show", help="Show one work brief by exact brief_id.")
+    wb_show.add_argument("brief_id", help="Exact brief id (brief_...)")
+    wb_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    wb_show.add_argument("--markdown", action="store_true", help="Emit the markdown brief")
+    wb_show.add_argument("--memory-dir")
+    work_brief_parser.set_defaults(command="work-brief")
 
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
@@ -1809,6 +1871,8 @@ def main(argv: list[str] | None = None) -> int:
         return _work_packet(parsed)
     if parsed.command == "branch-primer":
         return _branch_primer(parsed)
+    if parsed.command == "work-brief":
+        return _work_brief(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -4513,6 +4577,33 @@ def _work_packet_thread(parsed: argparse.Namespace) -> int:
     return 2
 
 
+def _resolve_brief_dict(
+    store: MemoryStore, brief_id: str | None
+) -> tuple[dict[str, object] | None, int | None]:
+    """Resolve --brief to a work-brief dict; returns (dict_or_None, exit_code_or_None)."""
+    if not brief_id:
+        return None, None
+    from chimera_memory.work_brief import find_work_brief
+
+    wb = find_work_brief(store, brief_id)
+    if wb is None:
+        print(f"error: no work brief with id {brief_id!r}", file=__import__("sys").stderr)
+        return None, 2
+    return wb.to_dict(), None
+
+
+def _brief_files_for(work_brief_dict: dict[str, object] | None) -> dict[str, str] | None:
+    """Render the WORK_BRIEF.md / work-brief.json pack files from a brief dict."""
+    if work_brief_dict is None:
+        return None
+    from chimera_memory.work_brief import render_work_brief_markdown_from_dict
+
+    return {
+        "WORK_BRIEF.md": render_work_brief_markdown_from_dict(work_brief_dict),
+        "work-brief.json": json.dumps(work_brief_dict, sort_keys=True, indent=2) + "\n",
+    }
+
+
 def _branch_primer(parsed: argparse.Namespace) -> int:
     """Local, read-only starting-context primer for the next agent.
 
@@ -4546,6 +4637,9 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     thread_dir = getattr(parsed, "thread_dir", None)
+    work_brief_dict, brief_err = _resolve_brief_dict(store, getattr(parsed, "brief_id", None))
+    if brief_err is not None:
+        return brief_err
     try:
         primer = build_branch_primer(
             store,
@@ -4560,6 +4654,7 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
             since=getattr(parsed, "since", None),
             limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
             limit_candidates=getattr(parsed, "limit_candidates", None),
+            work_brief=work_brief_dict,
         )
     except ThreadError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
@@ -4605,6 +4700,9 @@ def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     thread_dir = getattr(parsed, "thread_dir", None)
+    work_brief_dict, brief_err = _resolve_brief_dict(store, getattr(parsed, "brief_id", None))
+    if brief_err is not None:
+        return brief_err
     try:
         primer = build_branch_primer(
             store,
@@ -4619,16 +4717,18 @@ def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
             since=getattr(parsed, "since", None),
             limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
             limit_candidates=getattr(parsed, "limit_candidates", None),
+            work_brief=work_brief_dict,
         )
         manifest = write_kickoff_pack(
             primer, output_dir=Path(parsed.bundle_output_dir), store_label=store_label,
-            force=getattr(parsed, "force", False),
+            force=getattr(parsed, "force", False), brief_files=_brief_files_for(work_brief_dict),
         )
     except (ThreadError, PackError) as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
         return 2
     names = ", ".join(f["path"] for f in manifest["files"]) + ", manifest.json"
-    print(f"Agent kickoff pack written to {parsed.bundle_output_dir} (5 files: {names})")
+    count = len(manifest["files"]) + 1
+    print(f"Agent kickoff pack written to {parsed.bundle_output_dir} ({count} files: {names})")
     return 0
 
 
@@ -4642,6 +4742,96 @@ def _branch_primer_inspect(parsed: argparse.Namespace) -> int:
     else:
         print(render_inspect_text(result))
     return 0 if result["valid"] else 1
+
+
+def _work_brief(parsed: argparse.Namespace) -> int:
+    """Local task brief / kickoff contract: add (explicit write) / list / show (read-only).
+
+    Not a correctness, safety, approval, merge, or production-readiness signal.
+    """
+    from chimera_memory.work_brief import (
+        SCHEMA_VERSION,
+        add_work_brief,
+        build_work_brief,
+        filter_work_briefs,
+        find_work_brief,
+        read_work_briefs,
+        render_work_brief_markdown,
+    )
+
+    sub = getattr(parsed, "work_brief_command", None)
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+
+    if sub == "add":
+        title = getattr(parsed, "title", None)
+        objective = getattr(parsed, "objective", None)
+        if not title or not objective:
+            print("error: work-brief add requires --title and --objective",
+                  file=__import__("sys").stderr)
+            return 2
+        brief = build_work_brief(
+            title=title,
+            objective=objective,
+            task_kind=getattr(parsed, "task_kind", None),
+            scope_paths=tuple(getattr(parsed, "scope_paths", []) or []),
+            out_of_scope_paths=tuple(getattr(parsed, "out_of_scope_paths", []) or []),
+            constraints=tuple(getattr(parsed, "constraints", []) or []),
+            checks=tuple(getattr(parsed, "checks", []) or []),
+            done_criteria=tuple(getattr(parsed, "done_criteria", []) or []),
+            context_refs=tuple(getattr(parsed, "context_refs", []) or []),
+            tags=tuple(getattr(parsed, "tags", []) or []),
+            source=getattr(parsed, "source", "manual") or "manual",
+        )
+        add_work_brief(store, brief)
+        print(brief.brief_id)
+        return 0
+
+    if sub == "list":
+        briefs = filter_work_briefs(
+            read_work_briefs(store),
+            task_kind=getattr(parsed, "task_kind", None),
+            tag=getattr(parsed, "tag", None),
+        )
+        limit = getattr(parsed, "wb_limit", None)
+        if limit is not None:
+            briefs = briefs[: max(limit, 0)]
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": SCHEMA_VERSION, "work_briefs": [b.to_dict() for b in briefs]},
+                sort_keys=True,
+            ))
+        else:
+            if not briefs:
+                print("No work briefs.")
+            for b in briefs:
+                print(f"- {b.brief_id} [{b.task_kind or '(none)'}] {b.title}")
+        return 0
+
+    if sub == "show":
+        found = find_work_brief(store, parsed.brief_id)
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "work_brief": found.to_dict() if found else None,
+                    "found": found is not None,
+                },
+                sort_keys=True,
+            ))
+        elif found is None:
+            print(f"No work brief with id {parsed.brief_id!r}.")
+        else:
+            print(render_work_brief_markdown(found))
+        return 0
+
+    print("error: a work-brief subcommand is required (add/list/show)",
+          file=__import__("sys").stderr)
+    return 2
 
 
 def _tool_notes(parsed: argparse.Namespace) -> int:

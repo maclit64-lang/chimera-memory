@@ -105,6 +105,7 @@ class BranchPrimer:
     summary: BranchPrimerSummary
     work_packet: dict[str, Any]
     thread_delta: dict[str, Any] | None
+    work_brief: dict[str, Any] | None
     next_inspection_targets: tuple[HandoffTarget, ...]
     tool_notes: tuple[ToolNote, ...]
     candidate_tool_lessons: tuple[CandidateLesson, ...]
@@ -120,6 +121,7 @@ class BranchPrimer:
             "summary": self.summary.to_dict(),
             "work_packet": self.work_packet,
             "thread_delta": self.thread_delta,
+            "work_brief": self.work_brief,
             "next_inspection_targets": [t.to_dict() for t in self.next_inspection_targets],
             "tool_notes": [n.to_dict() for n in self.tool_notes],
             "candidate_tool_lessons": [c.to_dict() for c in self.candidate_tool_lessons],
@@ -180,6 +182,7 @@ def build_branch_primer(
     since: str | None = None,
     limit_tool_notes: int | None = None,
     limit_candidates: int | None = None,
+    work_brief: dict[str, Any] | None = None,
 ) -> BranchPrimer:
     """Compose a BranchPrimer from the local ledger (and an optional review thread).
 
@@ -260,6 +263,7 @@ def build_branch_primer(
         summary=summary,
         work_packet=_compact_packet(packet),
         thread_delta=thread_delta,
+        work_brief=work_brief,
         next_inspection_targets=packet.next_inspection_targets,
         tool_notes=packet.tool_notes,
         candidate_tool_lessons=packet.candidate_tool_lessons,
@@ -296,6 +300,19 @@ def render_branch_primer_markdown(primer: BranchPrimer, *, store_label: str) -> 
     lines.append(f"- filters: {_filter_label(f)}")
     lines.append(f"- review thread: {f.thread_dir or '(none)'}")
     lines.append("")
+    if primer.work_brief is not None:
+        wb = primer.work_brief
+        lines.append("## Work brief")
+        lines.append("")
+        lines.append(f"- title: {wb.get('title', '')}")
+        lines.append(f"- objective: {wb.get('objective', '')}")
+        scope = ", ".join(wb.get("scope_paths", []) or []) or "(none)"
+        lines.append(f"- scope: {scope}")
+        checks = wb.get("checks", []) or []
+        lines.append(f"- checks to report: {len(checks)}")
+        done = wb.get("done_criteria", []) or []
+        lines.append(f"- done criteria: {len(done)}")
+        lines.append("")
     lines.append("## Current work state")
     lines.append(f"- claims shown: {s.shown_claim_count}")
     lines.append(f"- unresolved: {s.open_or_unresolved_count}")
@@ -361,21 +378,35 @@ PROMPT_HEADER_ARTIFACT = "chimera_branch_primer_prompt_header"
 _PACK_PRIMER_MD = "BRANCH_PRIMER.md"
 _PACK_PRIMER_JSON = "branch-primer.json"
 _PACK_PROMPT_HEADER = "AGENT_PROMPT_HEADER.md"
+_PACK_BRIEF_MD = "WORK_BRIEF.md"
+_PACK_BRIEF_JSON = "work-brief.json"
 _PACK_README = "README.md"
 _PACK_MANIFEST = "manifest.json"
-_PACK_CONTENT_FILES = (_PACK_PRIMER_MD, _PACK_PRIMER_JSON, _PACK_PROMPT_HEADER, _PACK_README)
 
-_PACK_README_TEXT = (
-    "# Chimera Agent Kickoff Pack\n\n"
-    "A portable, local, advisory starting-context package for the next agent:\n\n"
-    f"- `{_PACK_PROMPT_HEADER}` — a pasteable agent prompt header (read this first).\n"
-    f"- `{_PACK_PRIMER_MD}` — the human-readable branch primer.\n"
-    f"- `{_PACK_PRIMER_JSON}` — the machine-readable branch primer.\n"
-    f"- `{_PACK_MANIFEST}` — the bundle manifest (file list + sha256 + byte counts).\n"
-    f"- `{_PACK_README}` — this file.\n\n"
-    "Advisory only — local agent starting context; not a correctness, safety, approval, "
-    "merge, or production-readiness signal.\n"
-)
+
+def _pack_readme(has_brief: bool) -> str:
+    lines = [
+        "# Chimera Agent Kickoff Pack",
+        "",
+        "A portable, local, advisory starting-context package for the next agent:",
+        "",
+        f"- `{_PACK_PROMPT_HEADER}` — a pasteable agent prompt header (read this first).",
+        f"- `{_PACK_PRIMER_MD}` — the human-readable branch primer.",
+        f"- `{_PACK_PRIMER_JSON}` — the machine-readable branch primer.",
+    ]
+    if has_brief:
+        lines.append(f"- `{_PACK_BRIEF_MD}` — the human-readable work brief (task contract).")
+        lines.append(f"- `{_PACK_BRIEF_JSON}` — the machine-readable work brief.")
+    lines.append(f"- `{_PACK_MANIFEST}` — the bundle manifest (file list + sha256 + byte counts).")
+    lines.append(f"- `{_PACK_README}` — this file.")
+    lines.append("")
+    lines.append(f"Work brief: {'included' if has_brief else 'none'}.")
+    lines.append("")
+    lines.append(
+        "Advisory only — local agent starting context; not a correctness, safety, approval, "
+        "merge, or production-readiness signal."
+    )
+    return "\n".join(lines) + "\n"
 
 
 def render_prompt_header(primer: BranchPrimer) -> str:
@@ -388,6 +419,16 @@ def render_prompt_header(primer: BranchPrimer) -> str:
     lines.append("")
     lines.append(f"Local advisory context only; {primer.advisory}.")
     lines.append("")
+    if primer.work_brief is not None:
+        wb = primer.work_brief
+        lines.append("Task brief:")
+        lines.append(f"- title: {wb.get('title', '')}")
+        lines.append(f"- objective: {wb.get('objective', '')}")
+        scope = ", ".join(wb.get("scope_paths", []) or []) or "(none)"
+        lines.append(f"- scope: {scope}")
+        lines.append(f"- checks to report: {len(wb.get('checks', []) or [])}")
+        lines.append(f"- done criteria: {len(wb.get('done_criteria', []) or [])}")
+        lines.append("")
     lines.append("Current work state:")
     lines.append(f"- claims shown: {s.shown_claim_count}")
     lines.append(f"- unresolved items: {s.open_or_unresolved_count}")
@@ -453,12 +494,15 @@ def write_kickoff_pack(
     output_dir: Path,
     store_label: str,
     force: bool = False,
+    brief_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Write a portable Agent Kickoff Pack (5 files) and return the manifest dict.
+    """Write a portable Agent Kickoff Pack and return the manifest dict.
 
     Writes only into ``output_dir``; never touches the memory store. The parent of
     ``output_dir`` must already exist; an existing non-empty directory is refused
-    unless ``force`` (then the bundle files are overwritten).
+    unless ``force`` (then the bundle files are overwritten). When ``brief_files``
+    is supplied (``{WORK_BRIEF.md: ..., work-brief.json: ...}``) those two files are
+    added to the pack and the manifest.
     """
     if output_dir.exists() and output_dir.is_file():
         raise PackError(f"output path is a file, not a directory: {output_dir}")
@@ -473,14 +517,22 @@ def write_kickoff_pack(
     else:
         output_dir.mkdir()
 
+    has_brief = bool(brief_files)
     rendered = {
         _PACK_PRIMER_MD: render_branch_primer_markdown(primer, store_label=store_label) + "\n",
         _PACK_PRIMER_JSON: json.dumps(primer.to_dict(), sort_keys=True, indent=2) + "\n",
         _PACK_PROMPT_HEADER: render_prompt_header(primer) + "\n",
-        _PACK_README: _PACK_README_TEXT,
     }
+    content_order = [_PACK_PRIMER_MD, _PACK_PRIMER_JSON, _PACK_PROMPT_HEADER]
+    if brief_files is not None:
+        rendered[_PACK_BRIEF_MD] = brief_files[_PACK_BRIEF_MD]
+        rendered[_PACK_BRIEF_JSON] = brief_files[_PACK_BRIEF_JSON]
+        content_order += [_PACK_BRIEF_MD, _PACK_BRIEF_JSON]
+    rendered[_PACK_README] = _pack_readme(has_brief)
+    content_order.append(_PACK_README)
+
     file_entries: list[dict[str, Any]] = []
-    for name in _PACK_CONTENT_FILES:
+    for name in content_order:
         data = rendered[name].encode("utf-8")
         (output_dir / name).write_bytes(data)
         file_entries.append(_hashed_entry(name, data))

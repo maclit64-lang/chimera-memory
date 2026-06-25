@@ -981,3 +981,61 @@ def test_mcp_prompt_header_no_forbidden_phrases(tmp_path: Path) -> None:
     blob = (t["description"] + json.dumps(r)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── work brief (read-only MCP tools) ─────────────────────────────────────────
+
+def _seed_briefs(tmp_path: Path) -> str:
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    store = MemoryStore.from_paths(root=tmp_path)
+    b = build_work_brief(title="A", objective="oa", task_kind="memory-feature", tags=("v0.29",))
+    add_work_brief(store, b)
+    add_work_brief(store, build_work_brief(title="B", objective="ob", task_kind="quick-fix",
+                                           tags=("small",)))
+    return b.brief_id
+
+
+def test_mcp_work_brief_tools_listed_read_only() -> None:
+    names = {t["name"] for t in list_tools(_ro())}
+    assert "chimera_work_brief_list" in names
+    assert "chimera_work_brief_show" in names
+
+
+def test_mcp_work_brief_list_and_show(tmp_path: Path) -> None:
+    bid = _seed_briefs(tmp_path)
+    lst = call_tool("chimera_work_brief_list", {}, perms=_ro(), root=tmp_path)
+    assert lst["schema_version"] == 1
+    assert len(lst["work_briefs"]) == 2
+    assert len(call_tool("chimera_work_brief_list", {"task_kind": "memory-feature"},
+                         perms=_ro(), root=tmp_path)["work_briefs"]) == 1
+    assert len(call_tool("chimera_work_brief_list", {"tag": "small", "limit": 5},
+                         perms=_ro(), root=tmp_path)["work_briefs"]) == 1
+    found = call_tool("chimera_work_brief_show", {"brief_id": bid}, perms=_ro(), root=tmp_path)
+    assert found["found"] is True and found["work_brief"]["brief_id"] == bid
+    missing = call_tool("chimera_work_brief_show", {"brief_id": "brief_nope"},
+                        perms=_ro(), root=tmp_path)
+    assert missing == {"schema_version": 1, "work_brief": None, "found": False}
+
+
+def test_mcp_work_brief_no_store_creation(tmp_path: Path) -> None:
+    call_tool("chimera_work_brief_list", {}, perms=_ro(), root=tmp_path)
+    call_tool("chimera_work_brief_show", {"brief_id": "x"}, perms=_ro(), root=tmp_path)
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_work_brief_add_not_exposed() -> None:
+    names = {t["name"] for t in list_tools(_rw())}
+    assert "chimera_work_brief_add" not in names  # creation stays CLI-only
+
+
+def test_mcp_work_brief_no_forbidden_phrases(tmp_path: Path) -> None:
+    _seed_briefs(tmp_path)
+    blob = ""
+    for name in ("chimera_work_brief_list", "chimera_work_brief_show"):
+        t = next(x for x in list_tools(_ro()) if x["name"] == name)
+        blob += t["description"]
+    blob += json.dumps(call_tool("chimera_work_brief_list", {}, perms=_ro(), root=tmp_path))
+    low = blob.lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"

@@ -564,6 +564,46 @@ _TOOLS = [
         required=[],
         permission="read",
     ),
+    _tool(
+        name="chimera_work_brief_list",
+        description=(
+            "List local Agent Work Briefs (task contracts) by exact task_kind/tag with an "
+            "optional limit. Read-only: never writes or creates a store. Advisory — local "
+            "task context; not a correctness, safety, approval, merge, production-readiness, "
+            "or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "task_kind": {"type": "string", "description": "Exact task_kind filter (optional)."},
+            "tag": {"type": "string", "description": "Exact tag filter (optional)."},
+            "limit": {"type": "integer", "description": "Max briefs after filters (>=0)."},
+        },
+        required=[],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_work_brief_show",
+        description=(
+            "Show one local Agent Work Brief by exact brief_id. Read-only: never writes or "
+            "creates a store; returns found:false when unknown. Advisory — local task "
+            "context; not a correctness, safety, approval, merge, production-readiness, or "
+            "speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "brief_id": {"type": "string", "description": "Exact brief id (brief_...)."},
+        },
+        required=["brief_id"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1110,6 +1150,37 @@ def _tool_branch_primer_prompt_header(args: dict[str, Any], *, root: Path) -> di
     }
 
 
+def _tool_work_brief_list(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: list local work briefs by exact task_kind/tag. Never writes."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_brief import filter_work_briefs, read_work_briefs
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    briefs = filter_work_briefs(
+        read_work_briefs(store), task_kind=args.get("task_kind"), tag=args.get("tag")
+    )
+    raw_limit = args.get("limit")
+    if isinstance(raw_limit, int) and not isinstance(raw_limit, bool):
+        briefs = briefs[: max(raw_limit, 0)]
+    return {"schema_version": 1, "work_briefs": [b.to_dict() for b in briefs]}
+
+
+def _tool_work_brief_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: show one work brief by exact brief_id. Never writes."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_brief import find_work_brief
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    brief = find_work_brief(store, args.get("brief_id") or "")
+    return {
+        "schema_version": 1,
+        "work_brief": brief.to_dict() if brief else None,
+        "found": brief is not None,
+    }
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1141,6 +1212,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_branch_primer_prompt_header": (
         lambda a, *, root, perms: _tool_branch_primer_prompt_header(a, root=root)
     ),
+    "chimera_work_brief_list": lambda a, *, root, perms: _tool_work_brief_list(a, root=root),
+    "chimera_work_brief_show": lambda a, *, root, perms: _tool_work_brief_show(a, root=root),
 }
 
 
