@@ -799,6 +799,50 @@ def _build_parser() -> argparse.ArgumentParser:
     wpt_diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     work_packet_parser.set_defaults(command="work-packet")
 
+    branch_primer_parser = subparsers.add_parser(
+        "branch-primer",
+        help=(
+            "Build a local starting-context primer for the next agent (work state + "
+            "operational memory). Read-only; not a correctness/safety/approval signal."
+        ),
+    )
+    branch_primer_parser.add_argument(
+        "--json", action="store_true", help="Emit the primer as machine-readable JSON"
+    )
+    branch_primer_parser.add_argument(
+        "--markdown", action="store_true", help="Emit the markdown primer (default view)"
+    )
+    branch_primer_parser.add_argument("--claim", dest="claim_id", help="Filter to this claim id")
+    branch_primer_parser.add_argument(
+        "--session", dest="session_id", help="Filter to claims in this session id"
+    )
+    branch_primer_parser.add_argument(
+        "--status", help="Filter to claims whose latest_status matches exactly"
+    )
+    branch_primer_parser.add_argument(
+        "--task-kind", dest="task_kind",
+        help="Filter tool notes and candidate lessons by exact task_kind",
+    )
+    branch_primer_parser.add_argument(
+        "--tag", dest="tag", help="Filter tool notes and candidate lessons by exact tag"
+    )
+    branch_primer_parser.add_argument(
+        "--thread-dir", dest="thread_dir",
+        help="Review thread directory to include (latest snapshot + delta).",
+    )
+    branch_primer_parser.add_argument(
+        "--limit-tool-notes", dest="limit_tool_notes", type=int, help="Max tool lessons (>=0)."
+    )
+    branch_primer_parser.add_argument(
+        "--limit-candidates", dest="limit_candidates", type=int,
+        help="Max candidate lessons (>=0).",
+    )
+    branch_primer_parser.add_argument(
+        "--output", dest="output", help="Write the primer to this file (parent must exist)."
+    )
+    branch_primer_parser.add_argument("--memory-dir")
+    branch_primer_parser.set_defaults(command="branch-primer")
+
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
         help="Record/list manual, local, advisory tool & workflow lessons (agent skill memory).",
@@ -1717,6 +1761,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handoff(parsed)
     if parsed.command == "work-packet":
         return _work_packet(parsed)
+    if parsed.command == "branch-primer":
+        return _branch_primer(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -4419,6 +4465,63 @@ def _work_packet_thread(parsed: argparse.Namespace) -> int:
     print("error: a thread subcommand is required "
           "(add/list/inspect/diff-latest/diff)", file=__import__("sys").stderr)
     return 2
+
+
+def _branch_primer(parsed: argparse.Namespace) -> int:
+    """Local, read-only starting-context primer for the next agent.
+
+    Composes the work packet and (optional) review-thread delta. Reads the ledger
+    and writes nothing to the memory store; ``--output`` writes only the named
+    file. Not a correctness, safety, approval, merge, or production-readiness signal.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.branch_primer import build_branch_primer, render_branch_primer_markdown
+    from chimera_memory.work_packet import ThreadError
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    try:
+        store_label = str(store.memory_dir.relative_to(Path.cwd()))
+    except ValueError:
+        store_label = store.memory_dir.name
+    thread_dir = getattr(parsed, "thread_dir", None)
+    try:
+        primer = build_branch_primer(
+            store,
+            generated_at=datetime.now(UTC).isoformat(),
+            store_label=store_label,
+            claim_id=getattr(parsed, "claim_id", None),
+            session_id=getattr(parsed, "session_id", None),
+            status=getattr(parsed, "status", None),
+            task_kind=getattr(parsed, "task_kind", None),
+            tag=getattr(parsed, "tag", None),
+            thread_dir=Path(thread_dir) if thread_dir else None,
+            limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
+            limit_candidates=getattr(parsed, "limit_candidates", None),
+        )
+    except ThreadError as exc:
+        print(f"error: {exc}", file=__import__("sys").stderr)
+        return 2
+    if parsed.json:
+        content = json.dumps(primer.to_dict(), sort_keys=True)
+    else:
+        content = render_branch_primer_markdown(primer, store_label=store_label)
+    output = getattr(parsed, "output", None)
+    if output:
+        try:
+            Path(output).write_text(content + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"error: {exc}", file=__import__("sys").stderr)
+            return 2
+        print(f"Branch primer written to {output}")
+        return 0
+    print(content)
+    return 0
 
 
 def _tool_notes(parsed: argparse.Namespace) -> int:

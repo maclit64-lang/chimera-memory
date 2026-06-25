@@ -867,3 +867,72 @@ def test_mcp_thread_tools_no_forbidden_phrases(tmp_path: Path) -> None:
     low = blob.lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── branch primer (read-only MCP tool) ───────────────────────────────────────
+
+def _seed_primer_thread(tmp_path: Path) -> Path:
+    from datetime import UTC, datetime, timedelta
+
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_notes import add_tool_note, build_tool_note
+    from chimera_memory.work_packet import add_thread_snapshot, build_work_packet
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(task_kind="k", tool_name="t", workflow_name="w",
+                                         lesson="L"))
+    td = tmp_path / "rt"
+    t0 = datetime(2026, 6, 25, 10, 0, 0, tzinfo=UTC)
+    add_thread_snapshot(build_work_packet(store, generated_at=t0.isoformat()),
+                        thread_dir=td, store_label="ws", now=t0, label="first")
+    add_tool_note(store, build_tool_note(task_kind="k2", tool_name="t2", lesson="L2"))
+    t1 = t0 + timedelta(seconds=5)
+    add_thread_snapshot(build_work_packet(store, generated_at=t1.isoformat()),
+                        thread_dir=td, store_label="ws", now=t1, label="second")
+    return td
+
+
+def test_mcp_branch_primer_listed_read_only() -> None:
+    assert "chimera_branch_primer" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_branch_primer_returns_primer(tmp_path: Path) -> None:
+    _seed_primer_thread(tmp_path)
+    d = call_tool("chimera_branch_primer", {"thread_dir": "rt"}, perms=_ro(), root=tmp_path)
+    assert d["schema_version"] == 1
+    assert d["artifact"] == "chimera_branch_primer"
+    assert set(d["summary"]) == {
+        "shown_claim_count", "open_or_unresolved_count", "next_inspection_target_count",
+        "tool_note_count", "candidate_count", "thread_snapshot_count",
+    }
+    assert d["summary"]["thread_snapshot_count"] == 2
+    assert d["latest_thread_delta"]["artifact"] == "chimera_work_packet_diff"
+
+
+def test_mcp_branch_primer_invalid_thread_returns_error(tmp_path: Path) -> None:
+    r = call_tool("chimera_branch_primer", {"thread_dir": "nope"}, perms=_ro(), root=tmp_path)
+    assert "error" in r
+
+
+def test_mcp_branch_primer_no_store_creation_or_mutation(tmp_path: Path) -> None:
+    td = _seed_primer_thread(tmp_path)
+    mem = tmp_path / ".chimera-memory"
+    store_snap = {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()}
+    thread_snap = sorted((str(p.relative_to(td)), p.stat().st_size)
+                         for p in td.rglob("*") if p.is_file())
+    call_tool("chimera_branch_primer", {"thread_dir": "rt"}, perms=_ro(), root=tmp_path)
+    assert {p.name: p.read_bytes() for p in sorted(mem.iterdir()) if p.is_file()} == store_snap
+    assert sorted((str(p.relative_to(td)), p.stat().st_size)
+                  for p in td.rglob("*") if p.is_file()) == thread_snap
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    call_tool("chimera_branch_primer", {}, perms=_ro(), root=empty)
+    assert not (empty / ".chimera-memory").exists()
+
+
+def test_mcp_branch_primer_no_forbidden_phrases(tmp_path: Path) -> None:
+    _seed_primer_thread(tmp_path)
+    t = next(x for x in list_tools(_ro()) if x["name"] == "chimera_branch_primer")
+    r = call_tool("chimera_branch_primer", {"thread_dir": "rt"}, perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(r)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"

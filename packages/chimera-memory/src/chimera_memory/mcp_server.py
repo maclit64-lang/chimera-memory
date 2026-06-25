@@ -475,6 +475,49 @@ _TOOLS = [
         required=["thread_dir"],
         permission="read",
     ),
+    _tool(
+        name="chimera_branch_primer",
+        description=(
+            "Build a local starting-context primer for the next agent: current work "
+            "state, unresolved items, next inspection targets, relevant tool lessons, "
+            "candidate lessons to review, and (with thread_dir) the latest review-thread "
+            "delta. Read-only: never writes, creates a store, or mutates a thread. "
+            "Advisory — local work context and operational memory; not a correctness, "
+            "safety, approval, merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "claim_id": {"type": "string", "description": "Exact claim id filter (optional)."},
+            "session_id": {"type": "string", "description": "Exact session id filter (optional)."},
+            "status": {"type": "string", "description": "Exact latest_status filter (optional)."},
+            "task_kind": {
+                "type": "string",
+                "description": "Exact task_kind filter for tool notes + candidates (optional).",
+            },
+            "tag": {
+                "type": "string",
+                "description": "Exact tag filter for tool notes + candidates (optional).",
+            },
+            "thread_dir": {
+                "type": "string",
+                "description": "Review thread dir (relative resolved vs root) (optional).",
+            },
+            "limit_tool_notes": {
+                "type": "integer",
+                "description": "Max tool lessons after filters (>=0).",
+            },
+            "limit_candidates": {
+                "type": "integer",
+                "description": "Max candidate lessons after filters (>=0).",
+            },
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -931,6 +974,48 @@ def _tool_work_packet_thread_diff_latest(args: dict[str, Any], *, root: Path) ->
         return {"error": str(exc)}
 
 
+def _tool_branch_primer(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: build a starting-context branch primer. Never writes."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.branch_primer import build_branch_primer
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_packet import ThreadError
+
+    def _int(value: Any) -> int | None:
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+    arg_root = args.get("root")
+    base = Path(arg_root) if arg_root else root
+    store = MemoryStore.from_paths(root=base)
+    raw_thread = args.get("thread_dir")
+    thread_dir: Path | None = None
+    if raw_thread:
+        p = Path(raw_thread)
+        thread_dir = p if p.is_absolute() else base / p
+    try:
+        store_label = str(store.memory_dir.relative_to(Path.cwd()))
+    except ValueError:
+        store_label = store.memory_dir.name
+    try:
+        primer = build_branch_primer(
+            store,
+            generated_at=datetime.now(UTC).isoformat(),
+            store_label=store_label,
+            claim_id=args.get("claim_id"),
+            session_id=args.get("session_id"),
+            status=args.get("status"),
+            task_kind=args.get("task_kind"),
+            tag=args.get("tag"),
+            thread_dir=thread_dir,
+            limit_tool_notes=_int(args.get("limit_tool_notes")),
+            limit_candidates=_int(args.get("limit_candidates")),
+        )
+    except ThreadError as exc:
+        return {"error": str(exc)}
+    return primer.to_dict()
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -958,6 +1043,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_work_packet_thread_diff_latest": (
         lambda a, *, root, perms: _tool_work_packet_thread_diff_latest(a, root=root)
     ),
+    "chimera_branch_primer": lambda a, *, root, perms: _tool_branch_primer(a, root=root),
 }
 
 
