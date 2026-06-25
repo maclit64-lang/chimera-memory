@@ -687,7 +687,45 @@ def _build_parser() -> argparse.ArgumentParser:
     tn_show.add_argument("note_id", help="Exact note id (tn_...)")
     tn_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     tn_show.add_argument("--memory-dir")
+    tn_candidates = tool_notes_sub.add_parser(
+        "candidates",
+        help="Show candidate tool lessons from tool activity (advisory; review before saving).",
+    )
+    tn_candidates.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    tn_candidates.add_argument("--task-kind", dest="task_kind", help="Exact task_kind filter")
+    tn_candidates.add_argument("--memory-dir")
     tool_notes_parser.set_defaults(command="tool-notes")
+
+    tool_activity_parser = subparsers.add_parser(
+        "tool-activity",
+        help="Record/list local tool & workflow activity (append-only, advisory).",
+    )
+    ta_sub = tool_activity_parser.add_subparsers(dest="tool_activity_command")
+    ta_add = ta_sub.add_parser("add", help="Record one tool/workflow activity")
+    ta_add.add_argument("--task-kind", dest="task_kind")
+    ta_add.add_argument("--tool", dest="tool_name")
+    ta_add.add_argument("--workflow", dest="workflow_name")
+    ta_add.add_argument("--phase")
+    ta_add.add_argument("--summary")
+    ta_add.add_argument("--evidence")
+    ta_add.add_argument("--caveat")
+    ta_add.add_argument("--status")
+    ta_add.add_argument("--duration-seconds", dest="duration_seconds", type=float)
+    ta_add.add_argument("--cost-units", dest="cost_units", type=float)
+    ta_add.add_argument(
+        "--artifact-ref", action="append", dest="artifact_refs", default=[], help="Repeatable"
+    )
+    ta_add.add_argument("--tag", action="append", dest="tags", default=[], help="Repeatable tag")
+    ta_add.add_argument("--source", default="manual")
+    ta_add.add_argument("--memory-dir")
+    ta_list = ta_sub.add_parser("list", help="List recorded tool activity")
+    ta_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ta_list.add_argument("--task-kind", dest="task_kind", help="Exact task_kind filter")
+    ta_list.add_argument("--tool", dest="tool_name", help="Exact tool_name filter")
+    ta_list.add_argument("--tag", dest="tag", help="Exact tag filter (membership)")
+    ta_list.add_argument("--limit", dest="ta_limit", type=int, help="Max activities (>=0).")
+    ta_list.add_argument("--memory-dir")
+    tool_activity_parser.set_defaults(command="tool-activity")
 
     failures_parser = subparsers.add_parser(
         "failures",
@@ -1512,6 +1550,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handoff(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
+    if parsed.command == "tool-activity":
+        return _tool_activity(parsed)
     if parsed.command == "failures":
         return _failures(parsed)
     if parsed.command == "verify":
@@ -4067,7 +4107,117 @@ def _tool_notes(parsed: argparse.Namespace) -> int:
         else:
             print(render_tool_notes_text([shown]))
         return 0
-    print("usage: chimera-memory tool-notes {add,list,suggest,show}", file=__import__("sys").stderr)
+    if sub == "candidates":
+        from chimera_memory.tool_activity import (
+            CANDIDATE_ADVISORY,
+            filter_tool_activities,
+            project_candidates,
+            read_tool_activities,
+            render_candidates_text,
+        )
+
+        task_kind = getattr(parsed, "task_kind", None)
+        activities = read_tool_activities(store)
+        if task_kind is not None:
+            activities = filter_tool_activities(activities, task_kind=task_kind)
+        candidates = project_candidates(activities)
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "advisory": CANDIDATE_ADVISORY,
+                    "candidates": [c.to_dict() for c in candidates],
+                },
+                sort_keys=True,
+            ))
+        else:
+            print(render_candidates_text(candidates))
+        return 0
+    print(
+        "usage: chimera-memory tool-notes {add,list,suggest,show,candidates}",
+        file=__import__("sys").stderr,
+    )
+    return 2
+
+
+def _tool_activity(parsed: argparse.Namespace) -> int:
+    """Local, append-only tool/workflow activity (advisory).
+
+    ``add`` records one activity to tool_activity.jsonl; ``list`` reads them.
+    Observational only — it does not save Tool Notes, run tools, or judge anything.
+    """
+    from chimera_memory.tool_activity import (
+        SCHEMA_VERSION,
+        add_tool_activity,
+        build_tool_activity,
+        filter_tool_activities,
+        read_tool_activities,
+        render_tool_activities_text,
+    )
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    sub = getattr(parsed, "tool_activity_command", None)
+    if sub == "add":
+        task_kind = parsed.task_kind
+        tool_name = parsed.tool_name
+        summary = parsed.summary
+        missing = [
+            flag
+            for flag, value in (("--task-kind", task_kind), ("--tool", tool_name),
+                                ("--summary", summary))
+            if not value
+        ]
+        if missing:
+            print(
+                f"error: missing required option(s): {', '.join(missing)}",
+                file=__import__("sys").stderr,
+            )
+            return 2
+        activity = build_tool_activity(
+            task_kind=task_kind,
+            tool_name=tool_name,
+            workflow_name=parsed.workflow_name,
+            phase=parsed.phase,
+            summary=summary,
+            evidence=parsed.evidence,
+            caveat=parsed.caveat,
+            status=parsed.status,
+            duration_seconds=parsed.duration_seconds,
+            cost_units=parsed.cost_units,
+            artifact_refs=tuple(parsed.artifact_refs or ()),
+            tags=tuple(parsed.tags or ()),
+            source=parsed.source,
+        )
+        add_tool_activity(store, activity)
+        print(activity.activity_id)
+        return 0
+    if sub == "list":
+        activities = filter_tool_activities(
+            read_tool_activities(store),
+            task_kind=getattr(parsed, "task_kind", None),
+            tool_name=getattr(parsed, "tool_name", None),
+            tag=getattr(parsed, "tag", None),
+        )
+        ta_limit = getattr(parsed, "ta_limit", None)
+        if ta_limit is not None:
+            activities = activities[: max(ta_limit, 0)]
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "tool_activities": [a.to_dict() for a in activities],
+                },
+                sort_keys=True,
+            ))
+        else:
+            print(render_tool_activities_text(activities))
+        return 0
+    print("usage: chimera-memory tool-activity {add,list}", file=__import__("sys").stderr)
     return 2
 
 

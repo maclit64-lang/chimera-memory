@@ -91,3 +91,49 @@ production-readiness signal, and not a form of verification. Chimera Memory does
 - sync anywhere — everything stays in the local `.chimera-memory/` store.
 
 A note is whatever you wrote; it does not assert that the workflow is correct or the best choice.
+
+## Tool Activity & candidate lessons
+
+A **Tool Activity** is an append-only local record of what a tool/workflow did. From recorded
+activity, Chimera projects **candidate lessons** — proposed Tool Notes you review and (if you
+want) save manually. Candidates are never saved automatically, never inferred or ranked, and
+make no correctness/safety/approval/merge/production-readiness claim.
+
+Record activity, then review candidates, then manually save the ones worth keeping:
+
+```bash
+chimera-memory tool-activity add \
+  --task-kind large-repo-forensics \
+  --tool parallel-agents \
+  --workflow unit-card-specialist-fanout \
+  --phase synthesis \
+  --summary "7 agents synthesized 31 Unit Cards after 100% file coverage." \
+  --evidence "2189/2189 files read; 31 Unit Cards; 31 manifests." \
+  --caveat "High cost/time; one MCP failure observed." \
+  --status completed --duration-seconds 12094 --cost-units 55.51 \
+  --tag repo-forensics --tag orchestration
+
+chimera-memory tool-activity list --json
+chimera-memory tool-notes candidates --json --task-kind large-repo-forensics
+```
+
+The candidate lesson is the activity's `summary` verbatim — a starting point to review and
+rewrite before saving via `tool-notes add` (the manual save path). Candidate JSON:
+
+```json
+{"schema_version": 1, "advisory": "candidate local operational lessons only; review before saving", "candidates": [ … ]}
+```
+
+### MCP
+
+- `chimera_tool_note_candidates` — read-only; projects candidates by exact `task_kind` (optional).
+  Available without `--allow-write`; never creates a store.
+- `chimera_tool_activity_add` — **write-gated** (requires `--allow-write`); appends one activity
+  to `tool_activity.jsonl`.
+
+### Non-goals
+
+Tool Activity is observational; candidates are advisory. Chimera does **not** auto-save a
+candidate as a Tool Note, infer lessons, detect tool use, rank/score, fuzzy/semantic match,
+spawn agents, run commands, or sync anywhere. Saving a candidate is always a manual step.
+

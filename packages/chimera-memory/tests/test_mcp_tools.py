@@ -613,3 +613,62 @@ def test_mcp_suggest_limit(tmp_path: Path) -> None:
     assert len(r["suggestions"]) == 1
     r0 = call_tool("chimera_tool_notes_suggest", {"limit": 0}, perms=_ro(), root=tmp_path)
     assert r0["suggestions"] == []
+
+
+# ── tool activity + candidate lessons (MCP) ──────────────────────────────────
+
+def test_tool_activity_add_is_write_classified() -> None:
+    assert "chimera_tool_activity_add" not in {t["name"] for t in list_tools(_ro())}
+    assert "chimera_tool_activity_add" in {t["name"] for t in list_tools(_rw())}
+
+
+def test_tool_note_candidates_listed_read_only() -> None:
+    assert "chimera_tool_note_candidates" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_activity_add_blocked_read_only(tmp_path: Path) -> None:
+    err = call_tool("chimera_tool_activity_add",
+                    {"task_kind": "k", "tool_name": "t", "summary": "s"},
+                    perms=_ro(), root=tmp_path)
+    assert "error" in err and "allow-write" in err["error"]
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_activity_add_requires_fields(tmp_path: Path) -> None:
+    r = call_tool("chimera_tool_activity_add", {"task_kind": "k"}, perms=_rw(), root=tmp_path)
+    assert "error" in r and "missing required" in r["error"]
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_activity_add_writes_only_activity_file_then_candidates(tmp_path: Path) -> None:
+    res = call_tool("chimera_tool_activity_add", {
+        "task_kind": "large-repo-forensics", "tool_name": "parallel-agents",
+        "workflow_name": "unit-card-specialist-fanout", "summary": "did X.",
+        "tags": ["repo-forensics"], "duration_seconds": 12094, "cost_units": 55.51,
+    }, perms=_rw(), root=tmp_path)
+    assert set(res) == {"schema_version", "tool_activity", "written_to"}
+    assert res["written_to"] == "tool_activity.jsonl"
+    files = sorted(p.name for p in (tmp_path / ".chimera-memory").iterdir() if p.is_file())
+    assert files == ["tool_activity.jsonl"]
+    c = call_tool("chimera_tool_note_candidates", {"task_kind": "large-repo-forensics"},
+                  perms=_ro(), root=tmp_path)
+    assert set(c) == {"schema_version", "advisory", "candidates"}
+    assert len(c["candidates"]) == 1
+    assert c["candidates"][0]["lesson"] == "did X."
+
+
+def test_mcp_candidates_does_not_create_store(tmp_path: Path) -> None:
+    c = call_tool("chimera_tool_note_candidates", {"task_kind": "x"}, perms=_ro(), root=tmp_path)
+    assert c["candidates"] == []
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_activity_no_forbidden_phrases(tmp_path: Path) -> None:
+    ta = next(t for t in list_tools(_rw()) if t["name"] == "chimera_tool_activity_add")
+    tc = next(t for t in list_tools(_ro()) if t["name"] == "chimera_tool_note_candidates")
+    r = call_tool("chimera_tool_activity_add", {"task_kind": "k", "tool_name": "t", "summary": "s"},
+                  perms=_rw(), root=tmp_path)
+    c = call_tool("chimera_tool_note_candidates", {}, perms=_ro(), root=tmp_path)
+    blob = (ta["description"] + tc["description"] + json.dumps(r) + json.dumps(c)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"

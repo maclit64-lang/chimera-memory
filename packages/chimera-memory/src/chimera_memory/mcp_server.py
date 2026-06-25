@@ -295,6 +295,62 @@ _TOOLS = [
         required=["task_kind", "tool_name", "lesson"],
         permission="write",
     ),
+    _tool(
+        name="chimera_tool_activity_add",
+        description=(
+            "Record one local tool/workflow activity (what happened operationally). "
+            "Requires --allow-write. Append-only to tool_activity.jsonl; does not touch "
+            "the claims/outcomes/scores/sessions ledger or tool_notes. Observational only "
+            "— it saves no Tool Note, runs nothing, and judges nothing."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to write (default: server root).",
+                "default": ".",
+            },
+            "task_kind": {"type": "string", "description": "Task kind this activity belongs to."},
+            "tool_name": {"type": "string", "description": "Tool that ran."},
+            "summary": {"type": "string", "description": "What happened (operational summary)."},
+            "workflow_name": {"type": "string", "description": "Workflow name (optional)."},
+            "phase": {"type": "string", "description": "Phase label (optional)."},
+            "evidence": {"type": "string", "description": "Supporting evidence (optional)."},
+            "caveat": {"type": "string", "description": "Caveats / costs / failures (optional)."},
+            "status": {"type": "string", "description": "Status, e.g. completed (optional)."},
+            "duration_seconds": {"type": "number", "description": "Seconds (optional)."},
+            "cost_units": {"type": "number", "description": "Cost units (optional)."},
+            "artifact_refs": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Artifact references (optional).",
+            },
+            "tags": {
+                "type": "array", "items": {"type": "string"}, "description": "Tags (optional).",
+            },
+            "source": {"type": "string", "description": "Provenance (default: manual)."},
+        },
+        required=["task_kind", "tool_name", "summary"],
+        permission="write",
+    ),
+    _tool(
+        name="chimera_tool_note_candidates",
+        description=(
+            "Project candidate tool lessons from recorded tool activity, by exact "
+            "task_kind (optional). Read-only: never writes, creates a store, saves a "
+            "Tool Note, runs commands, or calls models. Advisory — candidate local "
+            "operational lessons to review before saving; not a correctness, safety, "
+            "approval, merge, production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "task_kind": {"type": "string", "description": "Exact task_kind filter (optional)."},
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -593,6 +649,79 @@ def _tool_tool_note_add(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
     }
 
 
+def _tool_tool_activity_add(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Write-gated: record one tool/workflow activity. Requires allow_write.
+
+    Appends only to tool_activity.jsonl. Saves no Tool Note, runs nothing.
+    """
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
+
+    task_kind = args.get("task_kind")
+    tool_name = args.get("tool_name")
+    summary = args.get("summary")
+    required = (("task_kind", task_kind), ("tool_name", tool_name), ("summary", summary))
+    missing = [field for field, value in required if not value]
+    if missing:
+        return {"error": f"missing required field(s): {', '.join(missing)}"}
+
+    def _num(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    def _strs(value: Any) -> tuple[str, ...]:
+        return tuple(str(v) for v in value if isinstance(v, str)) if isinstance(value, list) else ()
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    activity = build_tool_activity(
+        task_kind=task_kind,
+        tool_name=tool_name,
+        workflow_name=args.get("workflow_name"),
+        phase=args.get("phase"),
+        summary=summary,
+        evidence=args.get("evidence"),
+        caveat=args.get("caveat"),
+        status=args.get("status"),
+        duration_seconds=_num(args.get("duration_seconds")),
+        cost_units=_num(args.get("cost_units")),
+        artifact_refs=_strs(args.get("artifact_refs")),
+        tags=_strs(args.get("tags")),
+        source=args.get("source") or "manual",
+    )
+    add_tool_activity(store, activity)
+    return {
+        "schema_version": 1,
+        "tool_activity": activity.to_dict(),
+        "written_to": "tool_activity.jsonl",
+    }
+
+
+def _tool_tool_note_candidates(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: project candidate tool lessons from activity. Never writes."""
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_activity import (
+        CANDIDATE_ADVISORY,
+        filter_tool_activities,
+        project_candidates,
+        read_tool_activities,
+    )
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    activities = read_tool_activities(store)
+    task_kind = args.get("task_kind")
+    if task_kind is not None:
+        activities = filter_tool_activities(activities, task_kind=task_kind)
+    candidates = project_candidates(activities)
+    return {
+        "schema_version": 1,
+        "advisory": CANDIDATE_ADVISORY,
+        "candidates": [c.to_dict() for c in candidates],
+    }
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -603,6 +732,10 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_tool_notes_suggest": lambda a, *, root, perms: _tool_tool_notes_suggest(a, root=root),
     "chimera_tool_note_show": lambda a, *, root, perms: _tool_tool_note_show(a, root=root),
     "chimera_tool_note_add": lambda a, *, root, perms: _tool_tool_note_add(a, root=root),
+    "chimera_tool_activity_add": lambda a, *, root, perms: _tool_tool_activity_add(a, root=root),
+    "chimera_tool_note_candidates": (
+        lambda a, *, root, perms: _tool_tool_note_candidates(a, root=root)
+    ),
 }
 
 
