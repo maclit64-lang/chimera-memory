@@ -379,6 +379,45 @@ _TOOLS = [
         required=["candidate_id"],
         permission="read",
     ),
+    _tool(
+        name="chimera_work_packet",
+        description=(
+            "Build one portable, local, advisory work packet (evidence + operational "
+            "memory): claims, open/unresolved items, next inspection targets, tool "
+            "lessons, and candidate lessons, with the applied filters. Read-only: never "
+            "writes, creates a store, or runs commands. Advisory — a local evidence and "
+            "operational memory summary; not a correctness, safety, approval, merge, "
+            "production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "claim_id": {"type": "string", "description": "Exact claim id filter (optional)."},
+            "session_id": {"type": "string", "description": "Exact session id filter (optional)."},
+            "status": {"type": "string", "description": "Exact latest_status filter (optional)."},
+            "task_kind": {
+                "type": "string",
+                "description": "Exact task_kind filter for tool notes + candidates (optional).",
+            },
+            "tag": {
+                "type": "string",
+                "description": "Exact tag filter for tool notes + candidates (optional).",
+            },
+            "limit_tool_notes": {
+                "type": "integer",
+                "description": "Max tool lessons after filters (>=0).",
+            },
+            "limit_candidates": {
+                "type": "integer",
+                "description": "Max candidate lessons after filters (>=0).",
+            },
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -776,6 +815,32 @@ def _tool_tool_note_candidate_show(args: dict[str, Any], *, root: Path) -> dict[
     }
 
 
+def _tool_work_packet(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: build a work packet from the local ledger. Never writes."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_packet import build_work_packet
+
+    def _int(value: Any) -> int | None:
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    packet = build_work_packet(
+        store,
+        generated_at=datetime.now(UTC).isoformat(),
+        claim_id=args.get("claim_id"),
+        session_id=args.get("session_id"),
+        status=args.get("status"),
+        task_kind=args.get("task_kind"),
+        tag=args.get("tag"),
+        limit_tool_notes=_int(args.get("limit_tool_notes")),
+        limit_candidates=_int(args.get("limit_candidates")),
+    )
+    return packet.to_dict()
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -793,6 +858,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_tool_note_candidate_show": (
         lambda a, *, root, perms: _tool_tool_note_candidate_show(a, root=root)
     ),
+    "chimera_work_packet": lambda a, *, root, perms: _tool_work_packet(a, root=root),
 }
 
 

@@ -740,3 +740,47 @@ def test_mcp_candidate_show_no_forbidden_phrases(tmp_path: Path) -> None:
     blob = (t["description"] + json.dumps(r)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── work packet (read-only MCP tool) ─────────────────────────────────────────
+
+def test_mcp_work_packet_listed_read_only() -> None:
+    assert "chimera_work_packet" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_work_packet_returns_packet(tmp_path: Path) -> None:
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.tool_activity import add_tool_activity, build_tool_activity
+    from chimera_memory.tool_notes import add_tool_note, build_tool_note
+    store = MemoryStore.from_paths(root=tmp_path)
+    add_tool_note(store, build_tool_note(
+        task_kind="large-repo-forensics", tool_name="pa", workflow_name="wf",
+        lesson="L", tags=("repo-forensics",)))
+    add_tool_activity(store, build_tool_activity(
+        task_kind="large-repo-forensics", tool_name="pa", workflow_name="wf",
+        summary="S", tags=("repo-forensics",)))
+    d = call_tool("chimera_work_packet",
+                  {"task_kind": "large-repo-forensics", "tag": "repo-forensics",
+                   "limit_candidates": 5}, perms=_ro(), root=tmp_path)
+    assert d["schema_version"] == 1
+    assert d["artifact"] == "chimera_work_packet"
+    assert set(d["summary"]) == {
+        "event_count", "settled_claim_count", "shown_claim_count", "open_or_unresolved_count",
+        "next_inspection_target_count", "tool_note_count", "candidate_count",
+    }
+    assert len(d["tool_notes"]) == 1
+    assert len(d["candidate_tool_lessons"]) == 1
+
+
+def test_mcp_work_packet_does_not_create_store(tmp_path: Path) -> None:
+    d = call_tool("chimera_work_packet", {}, perms=_ro(), root=tmp_path)
+    assert d["summary"]["tool_note_count"] == 0
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_work_packet_no_forbidden_phrases(tmp_path: Path) -> None:
+    t = next(x for x in list_tools(_ro()) if x["name"] == "chimera_work_packet")
+    d = call_tool("chimera_work_packet", {}, perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(d)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
