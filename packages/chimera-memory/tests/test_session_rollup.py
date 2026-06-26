@@ -25,12 +25,13 @@ _TOP_KEYS = {
     "schema_version", "artifact", "advisory", "generated_at", "filters", "summary",
     "sessions", "open_sessions", "blocked_sessions", "recent_closeouts",
     "reported_checks", "done_observations", "carryover", "suggested_review_targets",
-    "recent_harness_runs",
+    "recent_harness_runs", "recent_consequence_observations",
 }
 _SUMMARY_KEYS = {
     "session_count", "open_count", "blocked_count", "closed_count", "reported_check_count",
     "done_observation_count", "carryover_count", "attached_snapshot_count",
     "attached_artifact_count", "harness_run_count", "executed_run_count", "recorded_run_count",
+    "consequence_observation_count",
 }
 _FILTER_KEYS = {"status", "tag", "limit_sessions", "limit_carryover", "carryover_tag"}
 

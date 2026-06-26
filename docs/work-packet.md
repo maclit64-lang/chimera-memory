@@ -233,3 +233,12 @@ records a `harness_evidence_bundle` object (`path`, `schema_version`, `manifest_
 `harness_run_count`) in `work-packet.json` plus a matching markdown section. The packet never
 copies the evidence bundle and never auto-generates one — the reference is created only when you
 supply `--harness-evidence-dir`.
+
+## Consequence observations (v0.32)
+
+The packet also surfaces already-recorded
+[consequence observations](consequence-observations.md): a compact `consequence_observations` array,
+a `consequence_observation_count` summary field, and a `## Consequence observations` markdown
+section. `--session` narrows them to one work session. The packet **never auto-scans** — it shows
+only observations a prior explicit `consequence scan` recorded. The ledger is an inspection-target
+ledger, not a gate.

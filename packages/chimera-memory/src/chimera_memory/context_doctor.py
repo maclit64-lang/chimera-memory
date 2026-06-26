@@ -50,6 +50,7 @@ FINDING_KINDS = frozenset({
     "harness_run_without_session",
     "harness_run_output_truncated",
     "harness_run_with_redacted_preview",
+    "consequence_observation_without_session",
 })
 
 _CLOSEOUT_KINDS = frozenset({
@@ -264,6 +265,18 @@ def build_context_doctor(
                     tags=list(r.tags),
                     refs=[r.run_id],
                     suggested_inspection=[f"chimera-memory harness show {r.run_id} --markdown"],
+                ))
+        from chimera_memory.consequence_observation import read_consequence_observations
+
+        for o in read_consequence_observations(store):
+            if not o.work_session_id or o.work_session_id not in all_session_ids:
+                findings.append(_finding(
+                    "consequence_observation_without_session",
+                    "Consequence observation is not attached to a known work session.",
+                    tags=list(o.tags),
+                    refs=[o.observation_id],
+                    suggested_inspection=[
+                        f"chimera-memory consequence show {o.observation_id}"],
                 ))
 
     carryover_count = sum(

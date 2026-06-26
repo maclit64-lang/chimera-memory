@@ -1153,6 +1153,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Include bounded, redacted stdout/stderr previews (omitted by default).",
     )
     ws_hbundle.add_argument("--memory-dir")
+
+    ws_conseq = ws_sub.add_parser(
+        "consequences",
+        help="List consequence observations attached to a session (read-only).",
+    )
+    ws_conseq.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_conseq.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ws_conseq.add_argument("--limit", dest="limit", type=int, help="Max observations listed.")
+    ws_conseq.add_argument("--memory-dir")
     work_session_parser.set_defaults(command="work-session")
 
     context_doctor_parser = subparsers.add_parser(
@@ -1318,6 +1327,50 @@ def _build_parser() -> argparse.ArgumentParser:
     h_bdiff.add_argument("right", help="Right bundle dir or harness-evidence.json")
     h_bdiff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     harness_parser.set_defaults(command="harness")
+
+    consequence_parser = subparsers.add_parser(
+        "consequence",
+        help=(
+            "Local consequence-observation ledger: scan existing Memory/Harness evidence for "
+            "neutral inspection targets. Read-only except an explicit scan; not a gate."
+        ),
+    )
+    c_sub = consequence_parser.add_subparsers(dest="consequence_command")
+
+    c_scan = c_sub.add_parser(
+        "scan",
+        help=(
+            "Scan local Memory/Harness evidence and record neutral inspection targets "
+            "(append-only; executes nothing; --dry-run previews without writing)."
+        ),
+    )
+    c_scan.add_argument("--work-session", dest="work_session_id", help="Exact work-session id.")
+    c_scan.add_argument("--brief", dest="brief_id", help="Exact brief id.")
+    c_scan.add_argument("--tag", dest="tag", help="Exact tag filter.")
+    c_scan.add_argument(
+        "--limit", dest="limit", type=int, help="Max observations recorded (after rules)."
+    )
+    c_scan.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview observations without writing to the ledger.",
+    )
+    c_scan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    c_scan.add_argument("--memory-dir")
+
+    c_list = c_sub.add_parser("list", help="List recorded consequence observations (read-only).")
+    c_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    c_list.add_argument("--work-session", dest="work_session_id", help="Exact work-session id.")
+    c_list.add_argument("--brief", dest="brief_id", help="Exact brief id.")
+    c_list.add_argument("--kind", dest="kind", help="Exact observation_kind filter.")
+    c_list.add_argument("--tag", dest="tag", help="Exact tag filter.")
+    c_list.add_argument("--limit", dest="limit", type=int, help="Max observations listed.")
+    c_list.add_argument("--memory-dir")
+
+    c_show = c_sub.add_parser("show", help="Show one consequence observation by id (read-only).")
+    c_show.add_argument("observation_id", help="Exact observation id (co_...).")
+    c_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    c_show.add_argument("--memory-dir")
+    consequence_parser.set_defaults(command="consequence")
 
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
@@ -2247,6 +2300,8 @@ def main(argv: list[str] | None = None) -> int:
         return _context_doctor(parsed)
     if parsed.command == "harness":
         return _harness(parsed)
+    if parsed.command == "consequence":
+        return _consequence(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -5487,6 +5542,103 @@ def _harness(parsed: argparse.Namespace) -> int:
     return 2
 
 
+def _consequence(parsed: argparse.Namespace) -> int:
+    """Local consequence-observation ledger: scan / list / show.
+
+    ``scan`` is the only write path (append-only, de-duplicated) and writes nothing
+    when ``--dry-run`` is set; it executes nothing and never mutates the harness or
+    work-session stores. ``list`` / ``show`` are read-only.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.consequence_observation import (
+        append_new_observations,
+        filter_observations,
+        find_observation,
+        read_consequence_observations,
+        render_observation_markdown,
+        render_observations_markdown,
+        scan_observations,
+    )
+
+    sub = getattr(parsed, "consequence_command", None)
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    err = __import__("sys").stderr
+
+    if sub == "scan":
+        candidates = scan_observations(
+            store,
+            generated_at=datetime.now(UTC).isoformat(),
+            work_session_id=getattr(parsed, "work_session_id", None),
+            brief_id=getattr(parsed, "brief_id", None),
+            tag=getattr(parsed, "tag", None),
+            limit=getattr(parsed, "limit", None),
+        )
+        dry_run = getattr(parsed, "dry_run", False)
+        if dry_run:
+            recorded: list = []
+            would_record = candidates
+        else:
+            recorded = append_new_observations(store, candidates)
+            would_record = []
+        if getattr(parsed, "json", False):
+            print(json.dumps({
+                "schema_version": "consequence_observation.v1",
+                "dry_run": dry_run,
+                "scanned_count": len(candidates),
+                "recorded_count": len(recorded),
+                "consequence_observations": [o.to_dict() for o in (would_record or recorded)],
+            }, sort_keys=True))
+            return 0
+        if dry_run:
+            print(f"Dry run: {len(candidates)} consequence observation(s) would be recorded "
+                  "(nothing written).")
+        else:
+            print(f"Recorded {len(recorded)} new consequence observation(s) "
+                  f"({len(candidates)} scanned). Advisory only; not a gate.")
+        return 0
+
+    if sub == "list":
+        observations = filter_observations(
+            read_consequence_observations(store),
+            work_session_id=getattr(parsed, "work_session_id", None),
+            brief_id=getattr(parsed, "brief_id", None),
+            kind=getattr(parsed, "kind", None),
+            tag=getattr(parsed, "tag", None),
+        )
+        limit = getattr(parsed, "limit", None)
+        listed = observations[:limit] if limit is not None else observations
+        if getattr(parsed, "json", False):
+            print(json.dumps({
+                "schema_version": "consequence_observation.v1",
+                "consequence_observations": [o.to_dict() for o in listed],
+                "count": len(observations),
+            }, sort_keys=True))
+            return 0
+        print(render_observations_markdown(listed))
+        return 0
+
+    if sub == "show":
+        found = find_observation(store, parsed.observation_id)
+        if found is None:
+            print(f"error: no consequence observation with id {parsed.observation_id!r}",
+                  file=err)
+            return 2
+        if getattr(parsed, "json", False):
+            print(json.dumps(found.to_dict(), sort_keys=True))
+            return 0
+        print(render_observation_markdown(found))
+        return 0
+
+    print("error: a consequence subcommand is required (scan/list/show)", file=err)
+    return 2
+
+
 def _context_doctor(parsed: argparse.Namespace) -> int:
     """Local advisory context-hygiene report over work sessions and briefs.
 
@@ -5849,6 +6001,40 @@ def _work_session(parsed: argparse.Namespace) -> int:
             f"Harness evidence bundle written to {parsed.bundle_output_dir} "
             f"(5 files: {names}; {bundle.summary['harness_run_count']} run observations)"
         )
+        return 0
+
+    if sub == "consequences":
+        from chimera_memory.consequence_observation import (
+            observations_for_session,
+            render_observations_markdown,
+        )
+        from chimera_memory.work_session import find_session
+        if find_session(store, parsed.session_id) is None:
+            print(f"error: no work session with id {parsed.session_id!r}", file=err)
+            return 2
+        compact = observations_for_session(store, parsed.session_id)
+        limit = getattr(parsed, "limit", None)
+        obs_listed = compact[:limit] if limit is not None else compact
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": "consequence_observation.v1",
+                 "session_id": parsed.session_id,
+                 "consequence_observations": obs_listed, "count": len(compact)},
+                sort_keys=True,
+            ))
+            return 0
+        if not obs_listed:
+            print(f"No consequence observations attached to {parsed.session_id}.")
+            return 0
+        # Reuse the full-object renderer via read+filter for richer text.
+        from chimera_memory.consequence_observation import (
+            filter_observations,
+            read_consequence_observations,
+        )
+        full = filter_observations(
+            read_consequence_observations(store), work_session_id=parsed.session_id
+        )
+        print(render_observations_markdown(full[:limit] if limit is not None else full))
         return 0
 
     if sub in ("rollup", "rollup-bundle"):

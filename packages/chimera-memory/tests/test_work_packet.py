@@ -40,13 +40,13 @@ _FORBIDDEN = (
 _TOP_KEYS = {
     "schema_version", "artifact", "advisory", "generated_at", "filters", "summary",
     "claims", "open_or_unresolved", "next_inspection_targets", "tool_notes",
-    "candidate_tool_lessons", "harness_runs",
+    "candidate_tool_lessons", "harness_runs", "consequence_observations",
 }
 _SUMMARY_KEYS = {
     "event_count", "settled_claim_count", "shown_claim_count", "open_or_unresolved_count",
     "next_inspection_target_count", "tool_note_count", "candidate_count",
     "harness_run_count", "executed_harness_run_count", "recorded_harness_run_count",
-    "truncated_harness_run_count",
+    "truncated_harness_run_count", "consequence_observation_count",
 }
 _FILTER_KEYS = {
     "claim_id", "session_id", "status", "task_kind", "tag",

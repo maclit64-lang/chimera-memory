@@ -39,6 +39,7 @@ existence checks on the paths a session explicitly references.
 | `missing_thread_dir` | A session's referenced review-thread directory is missing on disk. |
 | `missing_kickoff_pack_dir` | A session's referenced kickoff-pack directory is missing on disk. |
 | `closeout_without_carryover_review` | A session recorded closeout activity but left no carryover. |
+| `consequence_observation_without_session` | A recorded [consequence observation](consequence-observations.md) is not attached to a known work session. |
 
 Each finding has a `kind`, a neutral `message`, the related `session_id` / `brief_id`, any
 referenced `refs`, a `suggested_inspection` command list, and `tags`. Findings use `kind` only —

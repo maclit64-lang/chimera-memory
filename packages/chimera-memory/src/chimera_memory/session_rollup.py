@@ -144,6 +144,17 @@ def build_session_rollup(
     ]
     recent_harness_runs = [compact_run(r) for r in harness_runs[-10:]]
 
+    from chimera_memory.consequence_observation import (
+        compact_observation,
+        read_consequence_observations,
+    )
+
+    consequence_obs = [
+        o for o in read_consequence_observations(store)
+        if o.work_session_id in selected_ids
+    ]
+    recent_consequence_observations = [compact_observation(o) for o in consequence_obs[-10:]]
+
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact": ROLLUP_ARTIFACT,
@@ -169,12 +180,14 @@ def build_session_rollup(
             "harness_run_count": len(harness_runs),
             "executed_run_count": sum(1 for r in harness_runs if r.mode == "executed"),
             "recorded_run_count": sum(1 for r in harness_runs if r.mode == "recorded"),
+            "consequence_observation_count": len(consequence_obs),
         },
         "sessions": [s.to_dict() for s in sessions],
         "open_sessions": open_sessions,
         "blocked_sessions": blocked_sessions,
         "recent_closeouts": recent_closeouts,
         "recent_harness_runs": recent_harness_runs,
+        "recent_consequence_observations": recent_consequence_observations,
         "reported_checks": reported_checks,
         "done_observations": done_observations,
         "carryover": carryover,
@@ -209,6 +222,9 @@ def render_session_rollup_markdown(rollup: dict[str, Any]) -> str:
         f"- harness runs: {summary.get('harness_run_count', 0)} "
         f"(executed {summary.get('executed_run_count', 0)}, "
         f"recorded {summary.get('recorded_run_count', 0)})"
+    )
+    lines.append(
+        f"- consequence observations: {summary.get('consequence_observation_count', 0)}"
     )
     lines.append("")
     lines.append("## Open sessions")

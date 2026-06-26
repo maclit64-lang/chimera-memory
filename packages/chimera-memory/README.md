@@ -167,6 +167,9 @@ none runs an agent, executes checks, scores, ranks, or routes.
   not interpreted as a verdict: `harness record` / `harness run` / `harness list` / `harness show`.
   Run observations can be exported as a portable, redacted, hash-manifested **Harness Evidence
   Bundle** (`harness bundle` / `bundle-inspect` / `bundle-diff`) for external tooling.
+- **Consequence Observations** — a local, append-only, neutral inspection-target ledger: an
+  explicit `consequence scan` reads existing Memory/Harness evidence and records neutral targets
+  (`consequence scan` / `list` / `show`). It is an inspection-target ledger, not a gate.
 
 The read views are also exposed as read-only MCP tools; every write, lifecycle, and bundle
 operation stays CLI-only. See the overview in
@@ -175,8 +178,9 @@ operation stays CLI-only. See the overview in
 [docs/branch-primer.md](../../docs/branch-primer.md),
 [docs/work-session.md](../../docs/work-session.md),
 [docs/context-doctor.md](../../docs/context-doctor.md),
-[docs/harness-lite.md](../../docs/harness-lite.md), and
-[docs/harness-evidence-bundle.md](../../docs/harness-evidence-bundle.md).
+[docs/harness-lite.md](../../docs/harness-lite.md),
+[docs/harness-evidence-bundle.md](../../docs/harness-evidence-bundle.md), and
+[docs/consequence-observations.md](../../docs/consequence-observations.md).
 
 ## Install
 

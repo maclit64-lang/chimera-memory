@@ -140,6 +140,14 @@ bundle can reference one with `work-packet bundle --harness-evidence-dir`. The b
 evidence transport format for external tooling — not a verdict engine. See
 [harness-evidence-bundle.md](harness-evidence-bundle.md).
 
+## Consequence observations (v0.32)
+
+An explicit [consequence scan](consequence-observations.md) reads these run observations (and the
+session/brief context) and records neutral, append-only inspection targets — for example a harness
+run that recorded a nonzero exit code, a truncated or redacted preview, or a session with no linked
+runs. An exit code is recorded, not interpreted; the ledger is an inspection-target ledger, not a
+gate. See [consequence-observations.md](consequence-observations.md).
+
 ## Non-goals
 
 Harness Lite does not run an agent, schedule or background-execute anything, spawn agents, launch

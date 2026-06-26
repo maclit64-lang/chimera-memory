@@ -768,7 +768,7 @@ def test_mcp_work_packet_returns_packet(tmp_path: Path) -> None:
         "event_count", "settled_claim_count", "shown_claim_count", "open_or_unresolved_count",
         "next_inspection_target_count", "tool_note_count", "candidate_count",
         "harness_run_count", "executed_harness_run_count", "recorded_harness_run_count",
-        "truncated_harness_run_count",
+        "truncated_harness_run_count", "consequence_observation_count",
     }
     assert len(d["tool_notes"]) == 1
     assert len(d["candidate_tool_lessons"]) == 1

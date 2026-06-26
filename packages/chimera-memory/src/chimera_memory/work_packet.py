@@ -95,6 +95,7 @@ class WorkPacketSummary:
     executed_harness_run_count: int
     recorded_harness_run_count: int
     truncated_harness_run_count: int
+    consequence_observation_count: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +110,7 @@ class WorkPacketSummary:
             "executed_harness_run_count": self.executed_harness_run_count,
             "recorded_harness_run_count": self.recorded_harness_run_count,
             "truncated_harness_run_count": self.truncated_harness_run_count,
+            "consequence_observation_count": self.consequence_observation_count,
         }
 
 
@@ -126,6 +128,7 @@ class WorkPacket:
     tool_notes: tuple[ToolNote, ...]
     candidate_tool_lessons: tuple[CandidateLesson, ...]
     harness_runs: tuple[dict[str, Any], ...]
+    consequence_observations: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -141,6 +144,7 @@ class WorkPacket:
             "tool_notes": [n.to_dict() for n in self.tool_notes],
             "candidate_tool_lessons": [c.to_dict() for c in self.candidate_tool_lessons],
             "harness_runs": [dict(r) for r in self.harness_runs],
+            "consequence_observations": [dict(o) for o in self.consequence_observations],
         }
 
 
@@ -189,6 +193,18 @@ def build_work_packet(
         selected_runs = selected_runs[-eff_limit:] if eff_limit > 0 else []
     harness_runs = tuple(compact_run(r) for r in selected_runs)
 
+    from chimera_memory.consequence_observation import (
+        compact_observation,
+        filter_observations,
+        read_consequence_observations,
+    )
+
+    # Already-recorded observations only — work-packet creation never auto-scans.
+    selected_obs = filter_observations(
+        read_consequence_observations(store), work_session_id=session_id
+    )
+    consequence_observations = tuple(compact_observation(o) for o in selected_obs)
+
     summary = WorkPacketSummary(
         event_count=handoff.event_count,
         settled_claim_count=handoff.settled_claim_count,
@@ -201,6 +217,7 @@ def build_work_packet(
         executed_harness_run_count=sum(1 for r in harness_runs if r.get("mode") == "executed"),
         recorded_harness_run_count=sum(1 for r in harness_runs if r.get("mode") == "recorded"),
         truncated_harness_run_count=sum(1 for r in harness_runs if r.get("output_truncated")),
+        consequence_observation_count=len(consequence_observations),
     )
     return WorkPacket(
         schema_version=SCHEMA_VERSION,
@@ -224,6 +241,7 @@ def build_work_packet(
         tool_notes=handoff.tool_notes,
         candidate_tool_lessons=tuple(candidates),
         harness_runs=harness_runs,
+        consequence_observations=consequence_observations,
     )
 
 
@@ -317,6 +335,18 @@ def render_work_packet_markdown(packet: WorkPacket, *, store_label: str) -> str:
             )
             label = f" — {r['check_label']}" if r.get("check_label") else ""
             lines.append(f"- [{r.get('mode')}] {r.get('command')} ({ep}){label}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("## Consequence observations")
+    co = packet.consequence_observations
+    lines.append(f"- observations: {s.consequence_observation_count}")
+    if co:
+        for obs in co:
+            subj = obs.get("subject", {})
+            lines.append(
+                f"- [{obs.get('observation_kind')}] {subj.get('type')} {subj.get('id')}"
+            )
     else:
         lines.append("- (none)")
     lines.append("")

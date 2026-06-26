@@ -820,6 +820,48 @@ _TOOLS = [
         required=["left_bundle_dir", "right_bundle_dir"],
         permission="read",
     ),
+    _tool(
+        name="chimera_consequence_observation_list",
+        description=(
+            "List local consequence observations (read-only): neutral inspection targets "
+            "previously recorded by an explicit `consequence scan`. Exact filters only "
+            "(work_session_id / brief_id / kind / tag). Each item carries observation_kind, "
+            "subject, suggested_checks, and a neutral note. Never writes, creates a store, "
+            "executes commands, or scans — scanning stays CLI-only."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "work_session_id": {"type": "string", "description": "Exact work-session filter."},
+            "brief_id": {"type": "string", "description": "Exact brief filter."},
+            "kind": {"type": "string", "description": "Exact observation_kind filter."},
+            "tag": {"type": "string", "description": "Exact tag filter."},
+            "limit": {"type": "integer", "description": "Max observations listed (after filters)."},
+        },
+        required=[],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_consequence_observation_show",
+        description=(
+            "Show one local consequence observation by id (read-only): full record including "
+            "subject, evidence refs, suggested checks, and the neutral note. Returns an error "
+            "for an unknown id. Never writes, creates a store, executes commands, or scans."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "observation_id": {"type": "string", "description": "Exact observation id (co_...)."},
+        },
+        required=["observation_id"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1571,6 +1613,46 @@ def _tool_harness_bundle_diff(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"unreadable bundle: {exc}"}
 
 
+def _tool_consequence_observation_list(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: list recorded consequence observations. Never writes, scans, or executes."""
+    from chimera_memory.consequence_observation import (
+        filter_observations,
+        read_consequence_observations,
+    )
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    observations = filter_observations(
+        read_consequence_observations(store),
+        work_session_id=args.get("work_session_id"),
+        brief_id=args.get("brief_id"),
+        kind=args.get("kind"),
+        tag=args.get("tag"),
+    )
+    limit = _opt_int(args.get("limit"))
+    listed = observations[:limit] if limit is not None else observations
+    return {
+        "schema_version": "consequence_observation.v1",
+        "consequence_observations": [o.to_dict() for o in listed],
+        "count": len(observations),
+    }
+
+
+def _tool_consequence_observation_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: show one consequence observation by id. Never writes, scans, or executes."""
+    from chimera_memory.consequence_observation import find_observation
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    observation_id = args.get("observation_id") or ""
+    found = find_observation(store, observation_id)
+    if found is None:
+        return {"error": f"no consequence observation with id {observation_id!r}"}
+    return found.to_dict()
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1633,6 +1715,12 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_harness_bundle_diff": (
         lambda a, *, root, perms: _tool_harness_bundle_diff(a)
+    ),
+    "chimera_consequence_observation_list": (
+        lambda a, *, root, perms: _tool_consequence_observation_list(a, root=root)
+    ),
+    "chimera_consequence_observation_show": (
+        lambda a, *, root, perms: _tool_consequence_observation_show(a, root=root)
     ),
 }
 

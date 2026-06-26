@@ -133,6 +133,10 @@ def build_session_closeout(
         for r in filter_runs(read_harness_runs(store), work_session_id=session_id)
     ]
 
+    from chimera_memory.consequence_observation import observations_for_session
+
+    consequence_observations = observations_for_session(store, session_id)
+
     session_dict = session.to_dict()
     return {
         "schema_version": SCHEMA_VERSION,
@@ -147,6 +151,7 @@ def build_session_closeout(
         "carryover": carryover,
         "attached_artifacts": list(session.artifact_refs),
         "harness_runs": harness_runs,
+        "consequence_observations": consequence_observations,
         "suggested_review_targets": _suggested_review_targets(
             session_dict, reported_checks, carryover
         ),
@@ -233,6 +238,20 @@ def render_session_closeout_markdown(closeout: dict[str, Any]) -> str:
             )
             label = f" — {r['check_label']}" if r.get("check_label") else ""
             lines.append(f"- [{r.get('mode')}] {r.get('command')} ({exit_phrase}){label}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("## Consequence observations")
+    consequence_observations = closeout.get("consequence_observations") or []
+    if consequence_observations:
+        for o in consequence_observations:
+            subj = o.get("subject", {})
+            lines.append(
+                f"- [{o.get('observation_kind')}] "
+                f"{subj.get('type')} {subj.get('id')}"
+            )
+            if o.get("note"):
+                lines.append(f"  Note: {o['note']}")
     else:
         lines.append("- (none)")
     lines.append("")
