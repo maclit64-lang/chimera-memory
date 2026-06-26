@@ -1105,6 +1105,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max carryover items listed (counts still reflect totals).",
     )
     ws_robundle.add_argument("--memory-dir")
+
+    ws_runs = ws_sub.add_parser(
+        "runs", help="List harness run observations attached to a session (read-only)."
+    )
+    ws_runs.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_runs.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ws_runs.add_argument("--limit", dest="limit", type=int, help="Max runs listed.")
+    ws_runs.add_argument("--memory-dir")
     work_session_parser.set_defaults(command="work-session")
 
     context_doctor_parser = subparsers.add_parser(
@@ -1150,6 +1158,74 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cd_bundle.add_argument("--memory-dir")
     context_doctor_parser.set_defaults(command="context-doctor")
+
+    harness_parser = subparsers.add_parser(
+        "harness",
+        help=(
+            "Local run-observation ledger (Harness Lite): record/run/list/show command "
+            "observations. Read-only except record/run; exit codes are recorded, not verdicts."
+        ),
+    )
+    h_sub = harness_parser.add_subparsers(dest="harness_command")
+
+    h_record = h_sub.add_parser(
+        "record", help="Record a command that ran elsewhere (no execution)."
+    )
+    h_record.add_argument("--command", dest="run_command", required=True, help="Command string.")
+    h_record.add_argument("--cwd", dest="cwd", help="Working directory it ran in.")
+    h_record.add_argument(
+        "--exit-code", dest="exit_code", type=int, help="Reported exit code (recorded, not judged)."
+    )
+    h_record.add_argument(
+        "--work-session", dest="work_session_id", help="Attach to this work session id."
+    )
+    h_record.add_argument("--check-label", dest="check_label", help="Optional check label.")
+    h_record.add_argument("--note", dest="note")
+    h_record.add_argument("--artifact-ref", action="append", dest="artifact_refs", default=[])
+    h_record.add_argument("--tag", action="append", dest="tags", default=[])
+    h_record.add_argument("--memory-dir")
+
+    h_run = h_sub.add_parser(
+        "run", help="Explicitly run a local command now (you invoked it) and record it."
+    )
+    h_run.add_argument(
+        "--command", dest="run_command", required=True, help="Command to run locally."
+    )
+    h_run.add_argument("--cwd", dest="cwd", help="Working directory to run in.")
+    h_run.add_argument(
+        "--work-session", dest="work_session_id", help="Attach to this work session id."
+    )
+    h_run.add_argument("--check-label", dest="check_label", help="Optional check label.")
+    h_run.add_argument("--note", dest="note")
+    h_run.add_argument("--artifact-ref", action="append", dest="artifact_refs", default=[])
+    h_run.add_argument("--tag", action="append", dest="tags", default=[])
+    h_run.add_argument(
+        "--max-output-bytes", dest="max_output_bytes", type=int,
+        help="Max stdout/stderr preview bytes stored (full output is hashed, not stored).",
+    )
+    h_run.add_argument(
+        "--timeout", dest="timeout", type=float, help="Optional timeout seconds (interrupted)."
+    )
+    h_run.add_argument(
+        "--shell", action="store_true",
+        help="Run via the shell (default: off; args are split with shlex).",
+    )
+    h_run.add_argument("--memory-dir")
+
+    h_list = h_sub.add_parser("list", help="List recorded run observations (read-only).")
+    h_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    h_list.add_argument("--work-session", dest="work_session_id", help="Exact work-session filter.")
+    h_list.add_argument("--brief", dest="brief_id", help="Exact brief filter.")
+    h_list.add_argument("--tag", dest="tag", help="Exact tag filter.")
+    h_list.add_argument("--limit", dest="limit", type=int, help="Max runs listed (after filters).")
+    h_list.add_argument("--memory-dir")
+
+    h_show = h_sub.add_parser("show", help="Show one run observation by id (read-only).")
+    h_show.add_argument("run_id", help="Exact run id (run_...).")
+    h_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    h_show.add_argument("--markdown", action="store_true", help="Emit markdown")
+    h_show.add_argument("--memory-dir")
+    harness_parser.set_defaults(command="harness")
 
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
@@ -2077,6 +2153,8 @@ def main(argv: list[str] | None = None) -> int:
         return _work_session(parsed)
     if parsed.command == "context-doctor":
         return _context_doctor(parsed)
+    if parsed.command == "harness":
+        return _harness(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -5089,6 +5167,120 @@ def _work_brief(parsed: argparse.Namespace) -> int:
     return 2
 
 
+def _harness(parsed: argparse.Namespace) -> int:
+    """Local run-observation ledger: record / run (explicit) / list / show.
+
+    Exit policy: ``record`` / ``run`` exit 0 when the observation is recorded; the
+    command's own exit code is stored in ``run.exit_code`` and never becomes the
+    Chimera process exit code. ``list`` / ``show`` are read-only.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.harness_run import (
+        DEFAULT_MAX_OUTPUT_BYTES,
+        append_harness_run,
+        build_executed_run,
+        build_recorded_run,
+        compact_run,
+        filter_runs,
+        find_run,
+        read_harness_runs,
+        render_run_markdown,
+    )
+
+    sub = getattr(parsed, "harness_command", None)
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    err = __import__("sys").stderr
+
+    def _resolve_session() -> tuple[str | None, int]:
+        """Return (brief_id, exit). Validates work_session_id if provided."""
+        wsid = getattr(parsed, "work_session_id", None)
+        if not wsid:
+            return None, 0
+        from chimera_memory.work_session import find_session
+        sess = find_session(store, wsid)
+        if sess is None:
+            print(f"error: no work session with id {wsid!r}", file=err)
+            return None, 2
+        return sess.brief_id, 0
+
+    if sub in ("record", "run"):
+        brief_id, exit_code = _resolve_session()
+        if exit_code:
+            return exit_code
+        common = {
+            "command": parsed.run_command,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "cwd": getattr(parsed, "cwd", None),
+            "work_session_id": getattr(parsed, "work_session_id", None),
+            "brief_id": brief_id,
+            "check_label": getattr(parsed, "check_label", None),
+            "note": getattr(parsed, "note", None),
+            "artifact_refs": tuple(getattr(parsed, "artifact_refs", []) or []),
+            "tags": tuple(getattr(parsed, "tags", []) or []),
+        }
+        if sub == "record":
+            run = build_recorded_run(exit_code=getattr(parsed, "exit_code", None), **common)
+        else:
+            mob = getattr(parsed, "max_output_bytes", None)
+            run = build_executed_run(
+                max_output_bytes=mob if mob is not None else DEFAULT_MAX_OUTPUT_BYTES,
+                timeout=getattr(parsed, "timeout", None),
+                shell=getattr(parsed, "shell", False),
+                **common,
+            )
+        append_harness_run(store, run)
+        exit_phrase = (
+            "exit code unknown" if run.exit_code is None
+            else ("exit code 0" if run.exit_code == 0 else f"nonzero exit code ({run.exit_code})")
+        )
+        print(f"Recorded harness run {run.run_id} (mode={run.mode}, {exit_phrase})")
+        return 0
+
+    if sub == "list":
+        runs = filter_runs(
+            read_harness_runs(store),
+            work_session_id=getattr(parsed, "work_session_id", None),
+            brief_id=getattr(parsed, "brief_id", None),
+            tag=getattr(parsed, "tag", None),
+        )
+        limit = getattr(parsed, "limit", None)
+        listed = runs[:limit] if limit is not None else runs
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": 1, "harness_runs": [compact_run(r) for r in listed],
+                 "count": len(runs)},
+                sort_keys=True,
+            ))
+            return 0
+        if not listed:
+            print("No harness runs recorded.")
+            return 0
+        for r in listed:
+            label = f" — {r.check_label}" if r.check_label else ""
+            print(f"{r.run_id}  {r.mode:8}  status={r.status}  exit={r.exit_code}{label}")
+        return 0
+
+    if sub == "show":
+        found = find_run(store, parsed.run_id)
+        if found is None:
+            print(f"error: no harness run with id {parsed.run_id!r}", file=err)
+            return 2
+        if getattr(parsed, "json", False):
+            print(json.dumps(found.to_dict(), sort_keys=True))
+            return 0
+        print(render_run_markdown(found))
+        return 0
+
+    print("error: a harness subcommand is required (record/run/list/show)", file=err)
+    return 2
+
+
 def _context_doctor(parsed: argparse.Namespace) -> int:
     """Local advisory context-hygiene report over work sessions and briefs.
 
@@ -5387,6 +5579,30 @@ def _work_session(parsed: argparse.Namespace) -> int:
             return 2
         count = len(manifest["files"]) + 1
         print(f"Session closeout bundle written to {parsed.bundle_output_dir} ({count} files)")
+        return 0
+
+    if sub == "runs":
+        from chimera_memory.harness_run import compact_run, filter_runs, read_harness_runs
+        from chimera_memory.work_session import find_session
+        if find_session(store, parsed.session_id) is None:
+            print(f"error: no work session with id {parsed.session_id!r}", file=err)
+            return 2
+        runs = filter_runs(read_harness_runs(store), work_session_id=parsed.session_id)
+        limit = getattr(parsed, "limit", None)
+        listed = runs[:limit] if limit is not None else runs
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": SCHEMA_VERSION, "session_id": parsed.session_id,
+                 "harness_runs": [compact_run(r) for r in listed], "count": len(runs)},
+                sort_keys=True,
+            ))
+            return 0
+        if not listed:
+            print(f"No harness runs attached to {parsed.session_id}.")
+            return 0
+        for r in listed:
+            label = f" — {r.check_label}" if r.check_label else ""
+            print(f"{r.run_id}  {r.mode:8}  status={r.status}  exit={r.exit_code}{label}")
         return 0
 
     if sub in ("rollup", "rollup-bundle"):

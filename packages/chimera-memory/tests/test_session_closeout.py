@@ -26,7 +26,7 @@ _FORBIDDEN = (
 _CLOSEOUT_KEYS = {
     "schema_version", "artifact", "advisory", "generated_at", "session", "work_brief",
     "snapshot_delta", "reported_checks", "done_observations", "carryover",
-    "attached_artifacts", "suggested_review_targets",
+    "attached_artifacts", "harness_runs", "suggested_review_targets",
 }
 _T0 = datetime(2026, 6, 25, 10, 0, 0, tzinfo=UTC)
 

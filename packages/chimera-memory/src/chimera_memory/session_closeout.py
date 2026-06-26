@@ -126,6 +126,13 @@ def build_session_closeout(
         brief = find_work_brief(store, session.brief_id)
         work_brief = brief.to_dict() if brief else None
 
+    from chimera_memory.harness_run import compact_run, filter_runs, read_harness_runs
+
+    harness_runs = [
+        compact_run(r)
+        for r in filter_runs(read_harness_runs(store), work_session_id=session_id)
+    ]
+
     session_dict = session.to_dict()
     return {
         "schema_version": SCHEMA_VERSION,
@@ -139,6 +146,7 @@ def build_session_closeout(
         "done_observations": done_observations,
         "carryover": carryover,
         "attached_artifacts": list(session.artifact_refs),
+        "harness_runs": harness_runs,
         "suggested_review_targets": _suggested_review_targets(
             session_dict, reported_checks, carryover
         ),
@@ -211,6 +219,20 @@ def render_session_closeout_markdown(closeout: dict[str, Any]) -> str:
     if closeout["carryover"]:
         for c in closeout["carryover"]:
             lines.append(f"- {c.get('carryover')}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("## Harness runs")
+    harness_runs = closeout.get("harness_runs") or []
+    if harness_runs:
+        for r in harness_runs:
+            exit_code = r.get("exit_code")
+            exit_phrase = (
+                "exit code unknown" if exit_code is None
+                else ("exit code 0" if exit_code == 0 else f"nonzero exit code ({exit_code})")
+            )
+            label = f" — {r['check_label']}" if r.get("check_label") else ""
+            lines.append(f"- [{r.get('mode')}] {r.get('command')} ({exit_phrase}){label}")
     else:
         lines.append("- (none)")
     lines.append("")

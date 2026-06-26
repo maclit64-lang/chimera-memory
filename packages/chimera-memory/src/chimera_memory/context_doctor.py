@@ -46,6 +46,9 @@ FINDING_KINDS = frozenset({
     "missing_thread_dir",
     "missing_kickoff_pack_dir",
     "closeout_without_carryover_review",
+    "session_without_harness_runs",
+    "harness_run_without_session",
+    "harness_run_output_truncated",
 })
 
 _CLOSEOUT_KINDS = frozenset({
@@ -78,7 +81,7 @@ def _finding(
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
-        "finding_id": _finding_id(kind, session_id or brief_id or ""),
+        "finding_id": _finding_id(kind, session_id or brief_id or (refs[0] if refs else "")),
         "kind": kind,
         "message": message,
         "session_id": session_id,
@@ -144,6 +147,15 @@ def build_context_doctor(
     briefs = read_work_briefs(store)
     linked_brief_ids = {s.brief_id for s in all_sessions if s.brief_id}
 
+    from chimera_memory.harness_run import read_harness_runs
+
+    all_runs = read_harness_runs(store)
+    all_session_ids = {s.session_id for s in all_sessions}
+    runs_by_session: dict[str, int] = {}
+    for r in all_runs:
+        if r.work_session_id:
+            runs_by_session[r.work_session_id] = runs_by_session.get(r.work_session_id, 0) + 1
+
     findings: list[dict[str, Any]] = []
     for s in sessions:
         kinds = {ev.event_kind for ev in events_by_session.get(s.session_id, [])}
@@ -201,6 +213,14 @@ def build_context_doctor(
                 session_id=s.session_id, brief_id=s.brief_id, refs=[s.kickoff_pack_dir], tags=tags,
                 suggested_inspection=[show],
             ))
+        if runs_by_session.get(s.session_id, 0) == 0:
+            findings.append(_finding(
+                "session_without_harness_runs",
+                "Session has no attached harness run observations.",
+                session_id=s.session_id, brief_id=s.brief_id, tags=tags,
+                suggested_inspection=[
+                    show, f"chimera-memory harness list --work-session {s.session_id}"],
+            ))
 
     if status is None:
         for b in briefs:
@@ -215,6 +235,26 @@ def build_context_doctor(
                     f"chimera-memory work-brief show {b.brief_id}",
                     f"chimera-memory work-session start --brief {b.brief_id}"],
             ))
+
+    if status is None:
+        for r in all_runs:
+            if not r.work_session_id or r.work_session_id not in all_session_ids:
+                findings.append(_finding(
+                    "harness_run_without_session",
+                    "Harness run is not attached to a known work session.",
+                    tags=list(r.tags),
+                    refs=[r.run_id],
+                    suggested_inspection=[f"chimera-memory harness show {r.run_id}"],
+                ))
+        for r in all_runs:
+            if r.output_truncated:
+                findings.append(_finding(
+                    "harness_run_output_truncated",
+                    "Harness run output was truncated; full output is hashed, not stored.",
+                    tags=list(r.tags),
+                    refs=[r.run_id],
+                    suggested_inspection=[f"chimera-memory harness show {r.run_id}"],
+                ))
 
     carryover_count = sum(
         1

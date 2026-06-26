@@ -1279,3 +1279,61 @@ def test_mcp_context_doctor_no_forbidden_phrases(tmp_path: Path) -> None:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
     for word in ("healthy", "unhealthy", "pass", "fail", "ready"):
         assert not re.search(r"\b" + word + r"\b", blob), f"forbidden word: {word!r}"
+
+
+# ── harness lite (read-only MCP tools) ───────────────────────────────────────
+
+def _seed_harness(tmp_path: Path) -> str:
+    from chimera_memory.harness_run import append_harness_run, build_recorded_run
+    from chimera_memory.storage import MemoryStore
+    store = MemoryStore.from_paths(root=tmp_path)
+    run = build_recorded_run(
+        command="uv run pytest", generated_at="2026-06-26T10:00:00+00:00", exit_code=0,
+        work_session_id="sess_x", brief_id="brief_y", check_label="suite", tags=("v0.30",))
+    append_harness_run(store, run)
+    return run.run_id
+
+
+def test_mcp_harness_tools_listed_read_only() -> None:
+    names = {t["name"] for t in list_tools(_ro())}
+    assert {"chimera_harness_run_list", "chimera_harness_run_show"} <= names
+
+
+def test_mcp_harness_run_record_not_exposed() -> None:
+    names = {t["name"] for t in list_tools(_rw())}
+    for n in ("chimera_harness_run", "chimera_harness_record", "chimera_harness_run_run"):
+        assert n not in names
+
+
+def test_mcp_harness_run_list_returns_compact(tmp_path: Path) -> None:
+    _seed_harness(tmp_path)
+    d = call_tool("chimera_harness_run_list", {"work_session_id": "sess_x", "limit": 5},
+                  perms=_ro(), root=tmp_path)
+    assert d["count"] == 1
+    assert d["harness_runs"][0]["command"] == "uv run pytest"
+    assert d["harness_runs"][0]["exit_code"] == 0
+
+
+def test_mcp_harness_run_show_found_and_missing(tmp_path: Path) -> None:
+    rid = _seed_harness(tmp_path)
+    full = call_tool("chimera_harness_run_show", {"run_id": rid}, perms=_ro(), root=tmp_path)
+    assert full["run_id"] == rid and "stdout_sha256" in full
+    assert "error" in call_tool("chimera_harness_run_show", {"run_id": "run_nope"},
+                                perms=_ro(), root=tmp_path)
+
+
+def test_mcp_harness_no_store_creation(tmp_path: Path) -> None:
+    call_tool("chimera_harness_run_list", {}, perms=_ro(), root=tmp_path)
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_harness_no_forbidden_phrases(tmp_path: Path) -> None:
+    import re
+    rid = _seed_harness(tmp_path)
+    t = next(x for x in list_tools(_ro()) if x["name"] == "chimera_harness_run_list")
+    d = call_tool("chimera_harness_run_show", {"run_id": rid}, perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(d)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+    for word in ("healthy", "unhealthy", "pass", "fail", "ready", "success", "failure"):
+        assert not re.search(r"\b" + word + r"\b", blob), f"forbidden word: {word!r}"

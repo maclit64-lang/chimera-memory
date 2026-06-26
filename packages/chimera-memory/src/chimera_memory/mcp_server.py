@@ -716,6 +716,48 @@ _TOOLS = [
         required=[],
         permission="read",
     ),
+    _tool(
+        name="chimera_harness_run_list",
+        description=(
+            "List local Harness Lite run observations (read-only). Each item is a compact, "
+            "output-free reference (run_id, mode, command, cwd, exit_code, status, check_label, "
+            "redaction/truncation flags, artifact refs). Exact filters only. An exit code is "
+            "recorded, never interpreted as a verdict; statuses are neutral (completed / "
+            "interrupted / unknown). Never writes, creates a store, or executes commands."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "work_session_id": {"type": "string", "description": "Exact work-session filter."},
+            "brief_id": {"type": "string", "description": "Exact brief filter."},
+            "tag": {"type": "string", "description": "Exact tag filter."},
+            "limit": {"type": "integer", "description": "Max runs listed (after filters)."},
+        },
+        required=[],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_harness_run_show",
+        description=(
+            "Show one local Harness Lite run observation by run_id (read-only): full record "
+            "including bounded, redacted stdout/stderr previews and output hashes. Returns an "
+            "error for an unknown id. An exit code is recorded, not interpreted as a verdict. "
+            "Never writes, creates a store, or executes commands."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "run_id": {"type": "string", "description": "Exact run id (run_...)."},
+        },
+        required=["run_id"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1385,6 +1427,42 @@ def _tool_context_doctor(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
     )
 
 
+def _tool_harness_run_list(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: list compact harness run observations. Never writes or executes."""
+    from chimera_memory.harness_run import compact_run, filter_runs, read_harness_runs
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    runs = filter_runs(
+        read_harness_runs(store),
+        work_session_id=args.get("work_session_id"),
+        brief_id=args.get("brief_id"),
+        tag=args.get("tag"),
+    )
+    limit = _opt_int(args.get("limit"))
+    listed = runs[:limit] if limit is not None else runs
+    return {
+        "schema_version": 1,
+        "harness_runs": [compact_run(r) for r in listed],
+        "count": len(runs),
+    }
+
+
+def _tool_harness_run_show(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: show one harness run observation by id. Never writes or executes."""
+    from chimera_memory.harness_run import find_run
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    run_id = args.get("run_id") or ""
+    found = find_run(store, run_id)
+    if found is None:
+        return {"error": f"no harness run with id {run_id!r}"}
+    return found.to_dict()
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1432,6 +1510,12 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_context_doctor": (
         lambda a, *, root, perms: _tool_context_doctor(a, root=root)
+    ),
+    "chimera_harness_run_list": (
+        lambda a, *, root, perms: _tool_harness_run_list(a, root=root)
+    ),
+    "chimera_harness_run_show": (
+        lambda a, *, root, perms: _tool_harness_run_show(a, root=root)
     ),
 }
 

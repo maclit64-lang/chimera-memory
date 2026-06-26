@@ -137,6 +137,13 @@ def build_session_rollup(
         for s in sorted(closed, key=lambda x: (x.updated_at, x.session_id), reverse=True)
     ]
 
+    from chimera_memory.harness_run import compact_run, read_harness_runs
+
+    harness_runs = [
+        r for r in read_harness_runs(store) if r.work_session_id in selected_ids
+    ]
+    recent_harness_runs = [compact_run(r) for r in harness_runs[-10:]]
+
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact": ROLLUP_ARTIFACT,
@@ -159,11 +166,15 @@ def build_session_rollup(
             "carryover_count": len(carryover_all),
             "attached_snapshot_count": sum(len(s.snapshot_ids) for s in sessions),
             "attached_artifact_count": sum(len(s.artifact_refs) for s in sessions),
+            "harness_run_count": len(harness_runs),
+            "executed_run_count": sum(1 for r in harness_runs if r.mode == "executed"),
+            "recorded_run_count": sum(1 for r in harness_runs if r.mode == "recorded"),
         },
         "sessions": [s.to_dict() for s in sessions],
         "open_sessions": open_sessions,
         "blocked_sessions": blocked_sessions,
         "recent_closeouts": recent_closeouts,
+        "recent_harness_runs": recent_harness_runs,
         "reported_checks": reported_checks,
         "done_observations": done_observations,
         "carryover": carryover,
@@ -194,6 +205,11 @@ def render_session_rollup_markdown(rollup: dict[str, Any]) -> str:
     lines.append(f"- reported checks: {summary['reported_check_count']}")
     lines.append(f"- done observations: {summary['done_observation_count']}")
     lines.append(f"- carryover items: {summary['carryover_count']}")
+    lines.append(
+        f"- harness runs: {summary.get('harness_run_count', 0)} "
+        f"(executed {summary.get('executed_run_count', 0)}, "
+        f"recorded {summary.get('recorded_run_count', 0)})"
+    )
     lines.append("")
     lines.append("## Open sessions")
     lines.extend([_session_line(s) for s in rollup["open_sessions"]] or ["- (none)"])
