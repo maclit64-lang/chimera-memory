@@ -143,6 +143,34 @@ none of it is a correctness, safety, approval, merge, or production-readiness si
 See [docs/tool-notes.md](../../docs/tool-notes.md) and
 [docs/work-packet.md](../../docs/work-packet.md).
 
+## Agent work lifecycle (v0.29)
+
+Chimera Memory also records an agent's **work lifecycle** — the task it was asked to do, the
+context it starts with, and the review it leaves behind. Like the rest, these surfaces are local
+and advisory; none is a correctness, safety, approval, merge, or production-readiness signal, and
+none runs an agent, executes checks, scores, ranks, or routes.
+
+- **Work Brief** — the requested task as a local input contract (objective, scope, constraints,
+  checks to report, done criteria): `work-brief add/list/show`.
+- **Branch Primer** — local starting context ("read these things before you begin"), optionally
+  written as a portable **Agent Kickoff Pack**: `branch-primer` / `branch-primer bundle`.
+- **Work Session** — an event-sourced lifecycle envelope tying a brief, review thread, snapshots,
+  and artifacts to one task, with neutral statuses: `work-session start/attach/close`.
+- **Session Closeout Pack** — an end-of-session summary (state, brief, snapshot delta, reported
+  checks, done observations, carryover): `work-session closeout` / `closeout-bundle`.
+- **Session Rollup / Carryover Inbox** — a read-only review board across sessions:
+  `work-session rollup` / `rollup-bundle`.
+- **Context Doctor** — advisory findings about missing, stale, or incomplete context before
+  another agent continues: `context-doctor` / `context-doctor bundle`.
+
+The read views are also exposed as read-only MCP tools; every write, lifecycle, and bundle
+operation stays CLI-only. See the overview in
+[docs/v0.29-agent-lifecycle.md](../../docs/v0.29-agent-lifecycle.md), and
+[docs/work-brief.md](../../docs/work-brief.md),
+[docs/branch-primer.md](../../docs/branch-primer.md),
+[docs/work-session.md](../../docs/work-session.md), and
+[docs/context-doctor.md](../../docs/context-doctor.md).
+
 ## Install
 
 ```bash
