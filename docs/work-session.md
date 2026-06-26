@@ -75,13 +75,13 @@ agent *reported* (all advisory, neutral):
 
 ```bash
 chimera-memory work-session report-check SESSION_ID --check "uv run pytest …" --note "Reported by agent."
-chimera-memory work-session report-done SESSION_ID --done "Full tests pass." --status reported --note "…"
+chimera-memory work-session report-done SESSION_ID --done "Full suite green." --status reported --note "…"
 chimera-memory work-session note-carryover SESSION_ID --carryover "PyPI publish still blocked." --tag release-blocker
 ```
 
 These append `check_reported` / `done_observed` / `carryover_noted` events. `report-done`'s
 `--status` is a neutral observation (`reported` / `not_reported` / `not_applicable` / `unknown`,
-default `reported`) — there is no pass/fail. Then build the closeout artifact:
+default `reported`) — there is no verdict. Then build the closeout artifact:
 
 ```bash
 chimera-memory work-session closeout SESSION_ID            # markdown (default)
@@ -96,7 +96,7 @@ the original `work_brief`, a `snapshot_delta`, `reported_checks`, `done_observat
 comparison*: with two or more attached snapshots it diffs the first attached snapshot against the
 latest (`mode: "first-vs-latest"`); with one it reports the single snapshot id; with none it is
 `null`. **Reported checks** are checks the agent *said* it ran — they are not executed here.
-**Done observations** are the agent's neutral notes about done-criteria — not a pass/fail judgment.
+**Done observations** are the agent's neutral notes about done-criteria — not an approval or correctness signal.
 
 `closeout`/`closeout-bundle` read the ledger and write nothing to `.chimera-memory`; `--output`
 and the bundle write only the files/directory you name. The bundle contains `SESSION_CLOSEOUT.md`,
