@@ -1107,6 +1107,50 @@ def _build_parser() -> argparse.ArgumentParser:
     ws_robundle.add_argument("--memory-dir")
     work_session_parser.set_defaults(command="work-session")
 
+    context_doctor_parser = subparsers.add_parser(
+        "context-doctor",
+        help=(
+            "Local context-hygiene report over work sessions and briefs (advisory findings). "
+            "Read-only; not a correctness/safety/approval signal and not a readiness gate."
+        ),
+    )
+    context_doctor_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    context_doctor_parser.add_argument(
+        "--markdown", action="store_true", help="Emit the markdown report (default view)"
+    )
+    context_doctor_parser.add_argument(
+        "--status", dest="status", help="Exact session-status filter (e.g. open)."
+    )
+    context_doctor_parser.add_argument("--tag", dest="tag", help="Exact session-tag filter.")
+    context_doctor_parser.add_argument(
+        "--limit-findings", dest="limit_findings", type=int,
+        help="Max findings listed (summary.finding_count still reflects the total).",
+    )
+    context_doctor_parser.add_argument(
+        "--output", dest="output", help="Write the report to this file."
+    )
+    context_doctor_parser.add_argument("--memory-dir")
+    cd_sub = context_doctor_parser.add_subparsers(dest="context_doctor_command")
+    cd_bundle = cd_sub.add_parser(
+        "bundle", help="Write a portable context-doctor bundle to a directory."
+    )
+    cd_bundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the bundle into (parent must exist).",
+    )
+    cd_bundle.add_argument(
+        "--force", action="store_true", help="Overwrite bundle files in a non-empty output dir."
+    )
+    cd_bundle.add_argument("--status", dest="status", help="Exact session-status filter.")
+    cd_bundle.add_argument("--tag", dest="tag", help="Exact session-tag filter.")
+    cd_bundle.add_argument(
+        "--limit-findings", dest="limit_findings", type=int, help="Max findings listed."
+    )
+    cd_bundle.add_argument("--memory-dir")
+    context_doctor_parser.set_defaults(command="context-doctor")
+
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
         help="Record/list manual, local, advisory tool & workflow lessons (agent skill memory).",
@@ -2031,6 +2075,8 @@ def main(argv: list[str] | None = None) -> int:
         return _work_brief(parsed)
     if parsed.command == "work-session":
         return _work_session(parsed)
+    if parsed.command == "context-doctor":
+        return _context_doctor(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -5041,6 +5087,66 @@ def _work_brief(parsed: argparse.Namespace) -> int:
     print("error: a work-brief subcommand is required (add/list/show)",
           file=__import__("sys").stderr)
     return 2
+
+
+def _context_doctor(parsed: argparse.Namespace) -> int:
+    """Local advisory context-hygiene report over work sessions and briefs.
+
+    Read-only except an explicit --output / bundle directory; never creates or
+    mutates a store, and never executes checks.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.context_doctor import (
+        DoctorError,
+        build_context_doctor,
+        render_context_doctor_markdown,
+        write_doctor_bundle,
+    )
+
+    memory_dir = getattr(parsed, "memory_dir", None)
+    store = (
+        MemoryStore.from_paths(memory_dir=memory_dir)
+        if memory_dir
+        else MemoryStore.from_paths(root=Path.cwd())
+    )
+    err = __import__("sys").stderr
+    doctor = build_context_doctor(
+        store,
+        generated_at=datetime.now(UTC).isoformat(),
+        status=getattr(parsed, "status", None),
+        tag=getattr(parsed, "tag", None),
+        limit_findings=getattr(parsed, "limit_findings", None),
+    )
+
+    if getattr(parsed, "context_doctor_command", None) == "bundle":
+        try:
+            manifest = write_doctor_bundle(
+                doctor, output_dir=Path(parsed.bundle_output_dir),
+                force=getattr(parsed, "force", False),
+            )
+        except DoctorError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        count = len(manifest["files"]) + 1
+        print(f"Context doctor bundle written to {parsed.bundle_output_dir} ({count} files)")
+        return 0
+
+    if getattr(parsed, "json", False):
+        content = json.dumps(doctor, sort_keys=True)
+    else:
+        content = render_context_doctor_markdown(doctor)
+    output = getattr(parsed, "output", None)
+    if output:
+        try:
+            Path(output).write_text(content + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        print(f"Context doctor report written to {output}")
+        return 0
+    print(content)
+    return 0
 
 
 def _work_session(parsed: argparse.Namespace) -> int:

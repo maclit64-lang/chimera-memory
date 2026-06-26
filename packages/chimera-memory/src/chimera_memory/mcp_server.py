@@ -690,6 +690,32 @@ _TOOLS = [
         required=[],
         permission="read",
     ),
+    _tool(
+        name="chimera_context_doctor",
+        description=(
+            "Build a local context-hygiene report over Agent Work Sessions and Work Briefs: "
+            "advisory findings (open sessions without closeout events, blocked sessions with "
+            "carryover, sessions without snapshots or reported checks, briefs not linked to a "
+            "session, and explicitly referenced review-thread / kickoff-pack directories that "
+            "are missing on disk) plus suggested review targets. Exact filters only; read-only: "
+            "never writes or creates a store and never executes checks. Advisory — local "
+            "context hygiene report; findings are observations, not verdicts; not a "
+            "correctness, safety, approval, merge, production-readiness, or speed guarantee, "
+            "and not a readiness gate."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "status": {"type": "string", "description": "Exact session-status filter."},
+            "tag": {"type": "string", "description": "Exact session-tag filter."},
+            "limit_findings": {"type": "integer", "description": "Max findings listed."},
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1341,6 +1367,24 @@ def _tool_work_session_rollup(args: dict[str, Any], *, root: Path) -> dict[str, 
     )
 
 
+def _tool_context_doctor(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: build a local context-hygiene report. Never writes; never executes."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.context_doctor import build_context_doctor
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    return build_context_doctor(
+        store,
+        generated_at=datetime.now(UTC).isoformat(),
+        status=args.get("status"),
+        tag=args.get("tag"),
+        limit_findings=_opt_int(args.get("limit_findings")),
+    )
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1385,6 +1429,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_work_session_rollup": (
         lambda a, *, root, perms: _tool_work_session_rollup(a, root=root)
+    ),
+    "chimera_context_doctor": (
+        lambda a, *, root, perms: _tool_context_doctor(a, root=root)
     ),
 }
 
