@@ -738,6 +738,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit-harness-runs", dest="limit_harness_runs", type=int,
         help="Max harness run observations (most recent N).",
     )
+    wp_bundle.add_argument(
+        "--harness-evidence-dir", dest="harness_evidence_dir",
+        help=(
+            "Reference an existing harness evidence bundle dir by relative path + manifest "
+            "hash (does not copy or auto-generate it)."
+        ),
+    )
     wp_bundle.add_argument("--memory-dir")
 
     wp_inspect = wp_sub.add_parser(
@@ -1121,6 +1128,31 @@ def _build_parser() -> argparse.ArgumentParser:
     ws_runs.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     ws_runs.add_argument("--limit", dest="limit", type=int, help="Max runs listed.")
     ws_runs.add_argument("--memory-dir")
+
+    ws_hbundle = ws_sub.add_parser(
+        "harness-bundle",
+        help=(
+            "Write a portable harness evidence bundle for this session (read-only on the "
+            "store; does not close the session or create a closeout)."
+        ),
+    )
+    ws_hbundle.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_hbundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the evidence bundle into (parent must exist).",
+    )
+    ws_hbundle.add_argument(
+        "--force", action="store_true", help="Overwrite bundle files in a non-empty output dir."
+    )
+    ws_hbundle.add_argument("--tag", dest="tag", help="Exact tag filter.")
+    ws_hbundle.add_argument(
+        "--limit", dest="limit", type=int, help="Max runs (most recent N, after filters)."
+    )
+    ws_hbundle.add_argument(
+        "--include-previews", action="store_true",
+        help="Include bounded, redacted stdout/stderr previews (omitted by default).",
+    )
+    ws_hbundle.add_argument("--memory-dir")
     work_session_parser.set_defaults(command="work-session")
 
     context_doctor_parser = subparsers.add_parser(
@@ -1243,6 +1275,48 @@ def _build_parser() -> argparse.ArgumentParser:
     h_cands.add_argument("--tag", dest="tag", help="Exact tag filter.")
     h_cands.add_argument("--limit", dest="limit", type=int, help="Max candidates (after filters).")
     h_cands.add_argument("--memory-dir")
+
+    h_bundle = h_sub.add_parser(
+        "bundle",
+        help=(
+            "Write a portable, redacted, hash-manifested harness evidence bundle to a dir "
+            "(read-only on the store; executes nothing)."
+        ),
+    )
+    h_bundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the evidence bundle into (parent must exist).",
+    )
+    h_bundle.add_argument(
+        "--force", action="store_true",
+        help="Overwrite bundle files in a non-empty output directory.",
+    )
+    h_bundle.add_argument("--work-session", dest="work_session_id", help="Exact work-session id.")
+    h_bundle.add_argument("--brief", dest="brief_id", help="Exact brief id.")
+    h_bundle.add_argument("--tag", dest="tag", help="Exact tag filter.")
+    h_bundle.add_argument(
+        "--limit", dest="limit", type=int, help="Max runs (most recent N, after filters)."
+    )
+    h_bundle.add_argument(
+        "--include-previews", action="store_true",
+        help="Include bounded, redacted stdout/stderr previews (omitted by default).",
+    )
+    h_bundle.add_argument("--memory-dir")
+
+    h_binspect = h_sub.add_parser(
+        "bundle-inspect",
+        help="Verify an evidence bundle manifest (hashes/files/schema; read-only).",
+    )
+    h_binspect.add_argument("bundle_dir", help="Bundle directory containing manifest.json")
+    h_binspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    h_bdiff = h_sub.add_parser(
+        "bundle-diff",
+        help="Compare two evidence bundles (added/removed/content_changed runs; read-only).",
+    )
+    h_bdiff.add_argument("left", help="Left bundle dir or harness-evidence.json")
+    h_bdiff.add_argument("right", help="Right bundle dir or harness-evidence.json")
+    h_bdiff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     harness_parser.set_defaults(command="harness")
 
     tool_notes_parser = subparsers.add_parser(
@@ -4733,16 +4807,27 @@ def _work_packet_bundle(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     output_dir = Path(parsed.bundle_output_dir)
+    harness_evidence_ref = None
+    he_dir = getattr(parsed, "harness_evidence_dir", None)
+    if he_dir:
+        from chimera_memory.harness_evidence import HarnessEvidenceError, evidence_reference
+        try:
+            harness_evidence_ref = evidence_reference(Path(he_dir), as_path=he_dir)
+        except (HarnessEvidenceError, OSError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=__import__("sys").stderr)
+            return 2
     try:
         manifest = write_work_packet_bundle(
             packet, output_dir=output_dir, store_label=store_label,
             force=getattr(parsed, "force", False),
+            harness_evidence_ref=harness_evidence_ref,
         )
     except BundleError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
         return 2
     names = ", ".join(f["path"] for f in manifest["files"]) + ", manifest.json"
-    print(f"Work packet bundle written to {output_dir} (4 files: {names})")
+    suffix = " (+harness evidence reference)" if harness_evidence_ref else ""
+    print(f"Work packet bundle written to {output_dir} (4 files: {names}){suffix}")
     return 0
 
 
@@ -5331,7 +5416,74 @@ def _harness(parsed: argparse.Namespace) -> int:
             print(f"  Candidate lesson: {c['lesson']}")
         return 0
 
-    print("error: a harness subcommand is required (record/run/list/show/candidates)", file=err)
+    if sub == "bundle":
+        from datetime import UTC, datetime
+
+        from chimera_memory.harness_evidence import (
+            HarnessEvidenceError,
+            build_harness_evidence_bundle,
+            write_harness_evidence_bundle,
+        )
+        try:
+            store_label = str(store.memory_dir.relative_to(Path.cwd()))
+        except ValueError:
+            store_label = store.memory_dir.name
+        bundle = build_harness_evidence_bundle(
+            store,
+            created_at=datetime.now(UTC).isoformat(),
+            work_session_id=getattr(parsed, "work_session_id", None),
+            brief_id=getattr(parsed, "brief_id", None),
+            tag=getattr(parsed, "tag", None),
+            limit=getattr(parsed, "limit", None),
+            include_previews=getattr(parsed, "include_previews", False),
+            store_label=store_label,
+        )
+        try:
+            manifest = write_harness_evidence_bundle(
+                bundle, output_dir=Path(parsed.bundle_output_dir),
+                force=getattr(parsed, "force", False),
+            )
+        except HarnessEvidenceError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        names = ", ".join(f["path"] for f in manifest["files"]) + ", manifest.json"
+        print(
+            f"Harness evidence bundle written to {parsed.bundle_output_dir} "
+            f"(5 files: {names}; {bundle.summary['harness_run_count']} run observations)"
+        )
+        return 0
+
+    if sub == "bundle-inspect":
+        from chimera_memory.harness_evidence import (
+            inspect_harness_evidence_bundle,
+            inspect_is_clean,
+            render_inspect_text,
+        )
+        result = inspect_harness_evidence_bundle(Path(parsed.bundle_dir))
+        if getattr(parsed, "json", False):
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(render_inspect_text(result))
+        return 0 if inspect_is_clean(result) else 1
+
+    if sub == "bundle-diff":
+        from chimera_memory.harness_evidence import diff_bundle_dirs, render_diff_text
+        try:
+            diff = diff_bundle_dirs(Path(parsed.left), Path(parsed.right))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        if getattr(parsed, "json", False):
+            print(json.dumps(diff, sort_keys=True))
+        else:
+            print(render_diff_text(diff))
+        return 0
+
+    print(
+        "error: a harness subcommand is required "
+        "(record/run/list/show/candidates/bundle/bundle-inspect/bundle-diff)",
+        file=err,
+    )
     return 2
 
 
@@ -5657,6 +5809,46 @@ def _work_session(parsed: argparse.Namespace) -> int:
         for r in listed:
             label = f" — {r.check_label}" if r.check_label else ""
             print(f"{r.run_id}  {r.mode:8}  status={r.status}  exit={r.exit_code}{label}")
+        return 0
+
+    if sub == "harness-bundle":
+        from datetime import UTC, datetime
+
+        from chimera_memory.harness_evidence import (
+            HarnessEvidenceError,
+            build_harness_evidence_bundle,
+            write_harness_evidence_bundle,
+        )
+        from chimera_memory.work_session import find_session
+        if find_session(store, parsed.session_id) is None:
+            print(f"error: no work session with id {parsed.session_id!r}", file=err)
+            return 2
+        try:
+            store_label = str(store.memory_dir.relative_to(Path.cwd()))
+        except ValueError:
+            store_label = store.memory_dir.name
+        bundle = build_harness_evidence_bundle(
+            store,
+            created_at=datetime.now(UTC).isoformat(),
+            work_session_id=parsed.session_id,
+            tag=getattr(parsed, "tag", None),
+            limit=getattr(parsed, "limit", None),
+            include_previews=getattr(parsed, "include_previews", False),
+            store_label=store_label,
+        )
+        try:
+            manifest = write_harness_evidence_bundle(
+                bundle, output_dir=Path(parsed.bundle_output_dir),
+                force=getattr(parsed, "force", False),
+            )
+        except HarnessEvidenceError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        names = ", ".join(f["path"] for f in manifest["files"]) + ", manifest.json"
+        print(
+            f"Harness evidence bundle written to {parsed.bundle_output_dir} "
+            f"(5 files: {names}; {bundle.summary['harness_run_count']} run observations)"
+        )
         return 0
 
     if sub in ("rollup", "rollup-bundle"):

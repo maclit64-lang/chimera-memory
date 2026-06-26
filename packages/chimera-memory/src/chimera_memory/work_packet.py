@@ -360,18 +360,36 @@ def _hashed_entry(name: str, data: bytes) -> dict[str, Any]:
     return {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
 
+def _render_harness_evidence_ref_md(ref: dict[str, Any]) -> str:
+    """Render the optional harness evidence bundle reference as a markdown section."""
+    return "\n".join([
+        "## Harness evidence bundle",
+        "",
+        "Referenced by relative path + manifest hash (not copied). Advisory only.",
+        f"- path: {ref.get('path')}",
+        f"- schema_version: {ref.get('schema_version')}",
+        f"- manifest_sha256: {ref.get('manifest_sha256')}",
+        f"- harness_run_count: {ref.get('harness_run_count')}",
+    ])
+
+
 def write_work_packet_bundle(
     packet: WorkPacket,
     *,
     output_dir: Path,
     store_label: str,
     force: bool = False,
+    harness_evidence_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a portable bundle (4 files) and return the manifest dict.
 
     Writes only into ``output_dir``; never touches the memory store. The parent
     of ``output_dir`` must already exist. An existing non-empty ``output_dir`` is
     refused unless ``force`` is set (then the bundle files are overwritten).
+
+    ``harness_evidence_ref`` (optional) references an external harness evidence
+    bundle by relative path + manifest hash; it is recorded in the packet JSON and
+    markdown but never copied.
     """
     if output_dir.exists() and output_dir.is_file():
         raise BundleError(f"output path is a file, not a directory: {output_dir}")
@@ -386,9 +404,15 @@ def write_work_packet_bundle(
     else:
         output_dir.mkdir()
 
+    packet_dict = packet.to_dict()
+    md = render_work_packet_markdown(packet, store_label=store_label)
+    if harness_evidence_ref is not None:
+        packet_dict["harness_evidence_bundle"] = harness_evidence_ref
+        md += "\n" + _render_harness_evidence_ref_md(harness_evidence_ref)
+
     rendered = {
-        _BUNDLE_MD: render_work_packet_markdown(packet, store_label=store_label) + "\n",
-        _BUNDLE_JSON: json.dumps(packet.to_dict(), sort_keys=True, indent=2) + "\n",
+        _BUNDLE_MD: md + "\n",
+        _BUNDLE_JSON: json.dumps(packet_dict, sort_keys=True, indent=2) + "\n",
         _BUNDLE_README: _README_TEXT,
     }
     file_entries: list[dict[str, Any]] = []

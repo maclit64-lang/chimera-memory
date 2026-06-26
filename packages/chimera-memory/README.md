@@ -165,6 +165,8 @@ none runs an agent, executes checks, scores, ranks, or routes.
 - **Harness Lite** — a local run-observation ledger: record a command that ran elsewhere, or
   explicitly run one locally, and attach the observation to a session. An exit code is recorded,
   not interpreted as a verdict: `harness record` / `harness run` / `harness list` / `harness show`.
+  Run observations can be exported as a portable, redacted, hash-manifested **Harness Evidence
+  Bundle** (`harness bundle` / `bundle-inspect` / `bundle-diff`) for external tooling.
 
 The read views are also exposed as read-only MCP tools; every write, lifecycle, and bundle
 operation stays CLI-only. See the overview in
@@ -172,8 +174,9 @@ operation stays CLI-only. See the overview in
 [docs/work-brief.md](../../docs/work-brief.md),
 [docs/branch-primer.md](../../docs/branch-primer.md),
 [docs/work-session.md](../../docs/work-session.md),
-[docs/context-doctor.md](../../docs/context-doctor.md), and
-[docs/harness-lite.md](../../docs/harness-lite.md).
+[docs/context-doctor.md](../../docs/context-doctor.md),
+[docs/harness-lite.md](../../docs/harness-lite.md), and
+[docs/harness-evidence-bundle.md](../../docs/harness-evidence-bundle.md).
 
 ## Install
 

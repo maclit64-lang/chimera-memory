@@ -779,6 +779,47 @@ _TOOLS = [
         required=[],
         permission="read",
     ),
+    _tool(
+        name="chimera_harness_bundle_inspect",
+        description=(
+            "Inspect a portable Harness Evidence Bundle directory (read-only): verify the "
+            "manifest file hashes, that required files exist, that the schema_version is "
+            "recognized, that the runs parse, and that no mutable store files are inside. "
+            "Returns neutral counts (file_count, harness_run_count, hash_mismatch_count, "
+            "missing_file_count, unexpected_store_file_count) plus notes. Never writes, "
+            "creates a store, executes commands, or creates a bundle."
+        ),
+        properties={
+            "bundle_dir": {
+                "type": "string",
+                "description": "Path to the evidence bundle directory (contains manifest.json).",
+            },
+        },
+        required=["bundle_dir"],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_harness_bundle_diff",
+        description=(
+            "Compare two portable Harness Evidence Bundle directories (read-only): added / "
+            "removed run_ids, summary deltas (including redaction / truncation / artifact "
+            "deltas), changed manifest files, and defensively content_changed run_ids (same "
+            "run_id, different content hash). Never writes, creates a store, executes "
+            "commands, or creates a bundle."
+        ),
+        properties={
+            "left_bundle_dir": {
+                "type": "string",
+                "description": "Path to the left (older) evidence bundle directory.",
+            },
+            "right_bundle_dir": {
+                "type": "string",
+                "description": "Path to the right (newer) evidence bundle directory.",
+            },
+        },
+        required=["left_bundle_dir", "right_bundle_dir"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1506,6 +1547,30 @@ def _tool_harness_run_candidates(args: dict[str, Any], *, root: Path) -> dict[st
     return {"schema_version": 1, "candidates": listed, "count": len(cands)}
 
 
+def _tool_harness_bundle_inspect(args: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: inspect a harness evidence bundle dir (manifest hashes/files). No store/exec."""
+    from chimera_memory.harness_evidence import inspect_harness_evidence_bundle
+
+    bundle_dir = args.get("bundle_dir")
+    if not bundle_dir:
+        return {"error": "bundle_dir is required"}
+    return inspect_harness_evidence_bundle(Path(bundle_dir))
+
+
+def _tool_harness_bundle_diff(args: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: diff two harness evidence bundle dirs. No store writes, no execution."""
+    from chimera_memory.harness_evidence import diff_bundle_dirs
+
+    left = args.get("left_bundle_dir")
+    right = args.get("right_bundle_dir")
+    if not left or not right:
+        return {"error": "left_bundle_dir and right_bundle_dir are required"}
+    try:
+        return diff_bundle_dirs(Path(left), Path(right))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"error": f"unreadable bundle: {exc}"}
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1562,6 +1627,12 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_harness_run_candidates": (
         lambda a, *, root, perms: _tool_harness_run_candidates(a, root=root)
+    ),
+    "chimera_harness_bundle_inspect": (
+        lambda a, *, root, perms: _tool_harness_bundle_inspect(a)
+    ),
+    "chimera_harness_bundle_diff": (
+        lambda a, *, root, perms: _tool_harness_bundle_diff(a)
     ),
 }
 

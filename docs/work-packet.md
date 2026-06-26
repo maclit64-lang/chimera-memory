@@ -223,3 +223,13 @@ narrows runs to that work session; otherwise the most-recent runs are shown (def
 `work-packet.json` (inspect still validates); `diff` reports `harness_runs.added` / `.removed` by
 `run_id`. An exit code is recorded, not interpreted as a verdict. See
 [harness-lite.md](harness-lite.md).
+
+### Referencing a harness evidence bundle
+
+A packet bundle can reference a portable
+[Harness Evidence Bundle](harness-evidence-bundle.md) by relative path and manifest hash:
+`work-packet bundle --session SESSION_ID --output-dir packet --harness-evidence-dir DIR`. This
+records a `harness_evidence_bundle` object (`path`, `schema_version`, `manifest_sha256`,
+`harness_run_count`) in `work-packet.json` plus a matching markdown section. The packet never
+copies the evidence bundle and never auto-generates one — the reference is created only when you
+supply `--harness-evidence-dir`.

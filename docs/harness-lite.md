@@ -128,6 +128,18 @@ exported — additively, read-only, and without verdict language:
 Every read surface reads the ledger and writes nothing; an exit code is recorded, not interpreted
 as a verdict.
 
+## Evidence bundles (v0.31)
+
+A [Harness Evidence Bundle](harness-evidence-bundle.md) is a portable, redacted, hash-manifested
+export of these run observations: `chimera-memory harness bundle --work-session SESSION_ID
+--output-dir DIR` writes `HARNESS_EVIDENCE.md` + `harness-evidence.json` + `harness-runs.json` +
+`manifest.json` + `README.md`. Full stdout/stderr is never included (outputs are referenced by
+sha256) and bounded redacted previews are omitted unless `--include-previews` is given. Inspect a
+bundle with `harness bundle-inspect` and compare two with `harness bundle-diff`; a Work Packet
+bundle can reference one with `work-packet bundle --harness-evidence-dir`. The bundle is an
+evidence transport format for external tooling — not a verdict engine. See
+[harness-evidence-bundle.md](harness-evidence-bundle.md).
+
 ## Non-goals
 
 Harness Lite does not run an agent, schedule or background-execute anything, spawn agents, launch
