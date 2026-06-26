@@ -1167,3 +1167,61 @@ def test_mcp_session_closeout_no_forbidden_phrases(tmp_path: Path) -> None:
     blob = (t["description"] + json.dumps(d)).lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── session rollup (read-only MCP tool) ──────────────────────────────────────
+
+def _seed_rollup_sessions(tmp_path: Path) -> None:
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    from chimera_memory.work_session import (
+        append_session_event,
+        build_session_event,
+        make_session_id,
+    )
+    store = MemoryStore.from_paths(root=tmp_path)
+    brief = build_work_brief(title="B", objective="O", task_kind="memory-feature", tags=("v0.29",))
+    add_work_brief(store, brief)
+    sid = make_session_id(created_at="2026-06-25T10:00:00+00:00", brief_id=brief.brief_id)
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="started", brief_id=brief.brief_id, tags=("v0.29",),
+        created_at="2026-06-25T10:00:00+00:00"))
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="carryover_noted", carryover="token missing",
+        tags=("release-blocker",), created_at="2026-06-25T10:00:01+00:00"))
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="closed", status="blocked",
+        created_at="2026-06-25T10:00:02+00:00"))
+
+
+def test_mcp_session_rollup_listed_read_only() -> None:
+    assert "chimera_work_session_rollup" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_session_rollup_bundle_write_not_exposed() -> None:
+    assert "chimera_work_session_rollup_bundle" not in {t["name"] for t in list_tools(_rw())}
+
+
+def test_mcp_session_rollup_returns_rollup(tmp_path: Path) -> None:
+    _seed_rollup_sessions(tmp_path)
+    d = call_tool("chimera_work_session_rollup", {"status": "blocked", "limit_carryover": 5},
+                  perms=_ro(), root=tmp_path)
+    assert d["artifact"] == "chimera_work_session_rollup"
+    assert d["summary"]["session_count"] == 1
+    assert d["carryover"][0]["carryover"] == "token missing"
+    assert d["filters"]["status"] == "blocked"
+    assert d["filters"]["limit_carryover"] == 5
+
+
+def test_mcp_session_rollup_no_store_creation(tmp_path: Path) -> None:
+    call_tool("chimera_work_session_rollup", {}, perms=_ro(), root=tmp_path)
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_session_rollup_no_forbidden_phrases(tmp_path: Path) -> None:
+    _seed_rollup_sessions(tmp_path)
+    t = next(x for x in list_tools(_ro()) if x["name"] == "chimera_work_session_rollup")
+    d = call_tool("chimera_work_session_rollup", {}, perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(d)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"

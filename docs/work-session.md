@@ -108,13 +108,60 @@ recorded" hint to its suggested first reads when closeout events exist (the prim
 on closeout). The read-only MCP tool `chimera_work_session_closeout` returns the same closeout JSON
 (available without `--allow-write`; never writes or creates a store); the reporting/bundle commands
 stay CLI-only.
+## Session review rollup
+
+A **rollup** is a read-only board across *all* sessions — a local way to ask "what is open, what
+is blocked, what recently closed, and what did agents leave behind?". It is a review view, not a
+task queue or router.
+
+```bash
+chimera-memory work-session rollup                 # markdown (default)
+chimera-memory work-session rollup --json
+chimera-memory work-session rollup --status open
+chimera-memory work-session rollup --status blocked
+chimera-memory work-session rollup --tag v0.29
+chimera-memory work-session rollup --carryover-tag release-blocker
+chimera-memory work-session rollup --limit-sessions 10 --limit-carryover 20
+chimera-memory work-session rollup --output SESSION_ROLLUP.md
+chimera-memory work-session rollup-bundle --output-dir DIR [--force]
+```
+
+The rollup JSON (`artifact: "chimera_work_session_rollup"`) carries `filters`, a `summary`
+(session / open / blocked / closed / reported-check / done-observation / carryover / attached-
+snapshot / attached-artifact counts), the `sessions` list, `open_sessions`, `blocked_sessions`,
+`recent_closeouts` (closed sessions, most-recently-updated first), `reported_checks`,
+`done_observations`, the `carryover` inbox, and `suggested_review_targets`.
+
+Filters are **exact** (no fuzzy / semantic matching); `--status` and `--tag` match a session's
+status / tags, `--carryover-tag` matches a carryover item's tags. Limits apply **after** filters;
+`--limit-carryover` truncates the listed carryover items only — `summary.carryover_count` still
+reflects the full selected total. Session and event order is deterministic.
+
+The **carryover inbox** is derived from `carryover_noted` events; each item keeps its
+`session_id`, `created_at`, verbatim `carryover` text, `note`, `tags`, `source`, `brief_id`, and
+`session_status`. The inbox is a *view*, not an automatic task queue: it does not create briefs or
+sessions, rank, prioritize, or deduplicate, and user-authored text is preserved verbatim.
+**Reported checks** are checks an agent *said* it ran; **done observations** are an agent's
+neutral done-criteria notes — neither is executed or judged here. **Suggested review targets** are
+a deterministic, unranked list of explicit pointers (open / blocked session ids, attached snapshot
+ids, artifact refs, work-brief ids, review threads).
+
+`rollup` / `rollup-bundle` read the ledger and write nothing to `.chimera-memory` — on an absent
+store the rollup is simply empty (no store is created); `--output` and the bundle write only the
+files/directory you name. The bundle contains `SESSION_ROLLUP.md`, `session-rollup.json`,
+`manifest.json`, and `README.md`, and refuses a non-empty output directory without `--force`. The
+read-only MCP tool `chimera_work_session_rollup` (root / status / tag / carryover_tag /
+limit_sessions / limit_carryover) returns the same rollup JSON (available without `--allow-write`;
+never writes or creates a store); the bundle command stays CLI-only.
 
 ## Non-goals
 
 A Work Session is advisory and local. It is **not** a correctness, safety, approval, merge, or
 production-readiness signal, and not a form of verification. It does not run an agent, inject
-prompts, execute tools, spawn agents, launch workflows, route, score, or sync. Statuses are
-neutral lifecycle states (open/blocked/closed/unknown) — never "passed", "verified", or similar.
+prompts, execute tools, spawn agents, launch workflows, route, score, rank, prioritize, or sync.
+The rollup and carryover inbox are review views, never task queues or approval boards. Statuses
+are neutral lifecycle states (open/blocked/closed/unknown) — never "passed", "verified", or
+similar.
 
 ## Example sequence
 
@@ -127,4 +174,6 @@ SNAP=$(jq -r '.snapshots[0].snapshot_id' review-thread/index.json)
 chimera-memory work-session attach-snapshot "$SESSION_ID" --thread-dir review-thread --snapshot-id "$SNAP"
 chimera-memory branch-primer --prompt-header --work-session "$SESSION_ID"
 chimera-memory work-session close "$SESSION_ID" --status closed --note "Branch pushed."
+chimera-memory work-session rollup
+chimera-memory work-session rollup --status blocked --carryover-tag release-blocker --json
 ```

@@ -1061,6 +1061,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="Overwrite bundle files in a non-empty output dir."
     )
     ws_cobundle.add_argument("--memory-dir")
+
+    ws_rollup = ws_sub.add_parser(
+        "rollup", help="Local multi-session review rollup (read-only carryover inbox)."
+    )
+    ws_rollup.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ws_rollup.add_argument("--markdown", action="store_true", help="Emit the markdown rollup")
+    ws_rollup.add_argument("--status", dest="status", help="Exact status filter (e.g. open).")
+    ws_rollup.add_argument("--tag", dest="tag", help="Exact session-tag filter.")
+    ws_rollup.add_argument(
+        "--carryover-tag", dest="carryover_tag", help="Exact tag filter for carryover items."
+    )
+    ws_rollup.add_argument(
+        "--limit-sessions", dest="limit_sessions", type=int, help="Max sessions (after filters)."
+    )
+    ws_rollup.add_argument(
+        "--limit-carryover", dest="limit_carryover", type=int,
+        help="Max carryover items listed (counts still reflect totals).",
+    )
+    ws_rollup.add_argument("--output", dest="output", help="Write the rollup to this file.")
+    ws_rollup.add_argument("--memory-dir")
+
+    ws_robundle = ws_sub.add_parser(
+        "rollup-bundle", help="Write a portable session rollup bundle to a directory."
+    )
+    ws_robundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the rollup bundle into (parent must exist).",
+    )
+    ws_robundle.add_argument(
+        "--force", action="store_true", help="Overwrite bundle files in a non-empty output dir."
+    )
+    ws_robundle.add_argument("--status", dest="status", help="Exact status filter (e.g. open).")
+    ws_robundle.add_argument("--tag", dest="tag", help="Exact session-tag filter.")
+    ws_robundle.add_argument(
+        "--carryover-tag", dest="carryover_tag", help="Exact tag filter for carryover items."
+    )
+    ws_robundle.add_argument(
+        "--limit-sessions", dest="limit_sessions", type=int, help="Max sessions (after filters)."
+    )
+    ws_robundle.add_argument(
+        "--limit-carryover", dest="limit_carryover", type=int,
+        help="Max carryover items listed (counts still reflect totals).",
+    )
+    ws_robundle.add_argument("--memory-dir")
     work_session_parser.set_defaults(command="work-session")
 
     tool_notes_parser = subparsers.add_parser(
@@ -5239,9 +5283,57 @@ def _work_session(parsed: argparse.Namespace) -> int:
         print(f"Session closeout bundle written to {parsed.bundle_output_dir} ({count} files)")
         return 0
 
+    if sub in ("rollup", "rollup-bundle"):
+        from datetime import UTC, datetime
+
+        from chimera_memory.session_rollup import (
+            RollupError,
+            build_session_rollup,
+            render_session_rollup_markdown,
+            write_rollup_bundle,
+        )
+
+        rollup = build_session_rollup(
+            store,
+            generated_at=datetime.now(UTC).isoformat(),
+            status=getattr(parsed, "status", None),
+            tag=getattr(parsed, "tag", None),
+            limit_sessions=getattr(parsed, "limit_sessions", None),
+            limit_carryover=getattr(parsed, "limit_carryover", None),
+            carryover_tag=getattr(parsed, "carryover_tag", None),
+        )
+        if sub == "rollup":
+            if getattr(parsed, "json", False):
+                content = json.dumps(rollup, sort_keys=True)
+            else:
+                content = render_session_rollup_markdown(rollup)
+            output = getattr(parsed, "output", None)
+            if output:
+                try:
+                    Path(output).write_text(content + "\n", encoding="utf-8")
+                except OSError as exc:
+                    print(f"error: {exc}", file=err)
+                    return 2
+                print(f"Session rollup written to {output}")
+                return 0
+            print(content)
+            return 0
+        # rollup-bundle
+        try:
+            manifest = write_rollup_bundle(
+                rollup, output_dir=Path(parsed.bundle_output_dir),
+                force=getattr(parsed, "force", False),
+            )
+        except RollupError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        count = len(manifest["files"]) + 1
+        print(f"Session rollup bundle written to {parsed.bundle_output_dir} ({count} files)")
+        return 0
+
     print("error: a work-session subcommand is required "
           "(start/list/show/attach-snapshot/attach-artifact/close/report-check/"
-          "report-done/note-carryover/closeout/closeout-bundle)", file=err)
+          "report-done/note-carryover/closeout/closeout-bundle/rollup/rollup-bundle)", file=err)
     return 2
 
 

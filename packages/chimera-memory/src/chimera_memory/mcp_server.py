@@ -665,6 +665,31 @@ _TOOLS = [
         required=["session_id"],
         permission="read",
     ),
+    _tool(
+        name="chimera_work_session_rollup",
+        description=(
+            "Build a local multi-session review rollup across Agent Work Sessions: open / "
+            "blocked / recently closed sessions, reported checks, done observations, the "
+            "carryover inbox, and suggested review targets. Exact filters only; read-only: "
+            "never writes or creates a store. Advisory — local multi-session review context; "
+            "not a correctness, safety, approval, merge, production-readiness, or speed "
+            "guarantee. Not a task queue, router, or approval board."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "status": {"type": "string", "description": "Exact status filter (e.g. open)."},
+            "tag": {"type": "string", "description": "Exact session-tag filter."},
+            "carryover_tag": {"type": "string", "description": "Exact carryover-tag filter."},
+            "limit_sessions": {"type": "integer", "description": "Max sessions (after filters)."},
+            "limit_carryover": {"type": "integer", "description": "Max carryover items listed."},
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1292,6 +1317,30 @@ def _tool_work_session_closeout(args: dict[str, Any], *, root: Path) -> dict[str
     return closeout
 
 
+def _opt_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _tool_work_session_rollup(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: build a multi-session review rollup. Never writes."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.session_rollup import build_session_rollup
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    return build_session_rollup(
+        store,
+        generated_at=datetime.now(UTC).isoformat(),
+        status=args.get("status"),
+        tag=args.get("tag"),
+        carryover_tag=args.get("carryover_tag"),
+        limit_sessions=_opt_int(args.get("limit_sessions")),
+        limit_carryover=_opt_int(args.get("limit_carryover")),
+    )
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1333,6 +1382,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_work_session_closeout": (
         lambda a, *, root, perms: _tool_work_session_closeout(a, root=root)
+    ),
+    "chimera_work_session_rollup": (
+        lambda a, *, root, perms: _tool_work_session_rollup(a, root=root)
     ),
 }
 
