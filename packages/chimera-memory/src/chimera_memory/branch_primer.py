@@ -109,6 +109,7 @@ class BranchPrimer:
     next_inspection_targets: tuple[HandoffTarget, ...]
     tool_notes: tuple[ToolNote, ...]
     candidate_tool_lessons: tuple[CandidateLesson, ...]
+    harness_runs: tuple[dict[str, Any], ...]
     suggested_first_read: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,6 +126,7 @@ class BranchPrimer:
             "next_inspection_targets": [t.to_dict() for t in self.next_inspection_targets],
             "tool_notes": [n.to_dict() for n in self.tool_notes],
             "candidate_tool_lessons": [c.to_dict() for c in self.candidate_tool_lessons],
+            "harness_runs": [dict(r) for r in self.harness_runs],
             "suggested_first_read": list(self.suggested_first_read),
         }
 
@@ -184,6 +186,7 @@ def build_branch_primer(
     limit_candidates: int | None = None,
     work_brief: dict[str, Any] | None = None,
     extra_first_read: tuple[str, ...] = (),
+    harness_runs: tuple[dict[str, Any], ...] = (),
 ) -> BranchPrimer:
     """Compose a BranchPrimer from the local ledger (and an optional review thread).
 
@@ -268,6 +271,7 @@ def build_branch_primer(
         next_inspection_targets=packet.next_inspection_targets,
         tool_notes=packet.tool_notes,
         candidate_tool_lessons=packet.candidate_tool_lessons,
+        harness_runs=harness_runs,
         suggested_first_read=tuple(
             _suggested_first_read(
                 packet, store_label=store_label, thread_dir=thread_dir,
@@ -362,6 +366,19 @@ def render_branch_primer_markdown(primer: BranchPrimer, *, store_label: str) -> 
     else:
         lines.append("- (none)")
     lines.append("")
+    lines.append("## Harness run observations")
+    if primer.harness_runs:
+        for r in primer.harness_runs:
+            ec = r.get("exit_code")
+            ep = (
+                "exit code unknown" if ec is None
+                else ("exit code 0" if ec == 0 else f"nonzero exit code ({ec})")
+            )
+            label = f" — {r['check_label']}" if r.get("check_label") else ""
+            lines.append(f"- [{r.get('mode')}] {r.get('command')} ({ep}){label}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
     lines.append("## Suggested first read")
     for item in primer.suggested_first_read:
         lines.append(f"- {item}")
@@ -382,6 +399,8 @@ _PACK_PRIMER_JSON = "branch-primer.json"
 _PACK_PROMPT_HEADER = "AGENT_PROMPT_HEADER.md"
 _PACK_BRIEF_MD = "WORK_BRIEF.md"
 _PACK_BRIEF_JSON = "work-brief.json"
+_PACK_HARNESS_MD = "HARNESS_RUNS.md"
+_PACK_HARNESS_JSON = "harness-runs.json"
 _PACK_README = "README.md"
 _PACK_MANIFEST = "manifest.json"
 
@@ -490,6 +509,30 @@ def _hashed_entry(name: str, data: bytes) -> dict[str, Any]:
     return {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
 
+def _render_harness_runs_markdown(harness_runs: tuple[dict[str, Any], ...]) -> str:
+    """Compact, output-free harness-run list for the kickoff pack. No stdout/stderr."""
+    lines = [
+        "# Harness run observations",
+        "",
+        "Advisory only. Local run observations; an exit code is recorded, not a verdict.",
+        "",
+    ]
+    for r in harness_runs:
+        ec = r.get("exit_code")
+        ep = (
+            "exit code unknown" if ec is None
+            else ("exit code 0" if ec == 0 else f"nonzero exit code ({ec})")
+        )
+        label = f" — {r['check_label']}" if r.get("check_label") else ""
+        lines.append(f"- [{r.get('mode')}] {r.get('command')} ({ep}){label}")
+        lines.append(
+            f"  run_id: {r.get('run_id')} · status: {r.get('status')} · "
+            f"redaction_applied: {r.get('redaction_applied')} · "
+            f"output_truncated: {r.get('output_truncated')}"
+        )
+    return "\n".join(lines)
+
+
 def write_kickoff_pack(
     primer: BranchPrimer,
     *,
@@ -530,6 +573,16 @@ def write_kickoff_pack(
         rendered[_PACK_BRIEF_MD] = brief_files[_PACK_BRIEF_MD]
         rendered[_PACK_BRIEF_JSON] = brief_files[_PACK_BRIEF_JSON]
         content_order += [_PACK_BRIEF_MD, _PACK_BRIEF_JSON]
+    if primer.harness_runs:
+        rendered[_PACK_HARNESS_MD] = _render_harness_runs_markdown(primer.harness_runs) + "\n"
+        rendered[_PACK_HARNESS_JSON] = json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "harness_runs": [dict(r) for r in primer.harness_runs],
+            },
+            sort_keys=True, indent=2,
+        ) + "\n"
+        content_order += [_PACK_HARNESS_MD, _PACK_HARNESS_JSON]
     rendered[_PACK_README] = _pack_readme(has_brief)
     content_order.append(_PACK_README)
 

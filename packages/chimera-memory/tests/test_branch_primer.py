@@ -35,7 +35,7 @@ _FORBIDDEN = (
 _TOP_KEYS = {
     "schema_version", "artifact", "advisory", "generated_at", "filters", "summary",
     "work_packet", "thread_delta", "work_brief", "next_inspection_targets", "tool_notes",
-    "candidate_tool_lessons", "suggested_first_read",
+    "candidate_tool_lessons", "harness_runs", "suggested_first_read",
 }
 _SUMMARY_KEYS = {
     "shown_claim_count", "open_or_unresolved_count", "next_inspection_target_count",

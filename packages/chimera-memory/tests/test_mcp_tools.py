@@ -767,6 +767,8 @@ def test_mcp_work_packet_returns_packet(tmp_path: Path) -> None:
     assert set(d["summary"]) == {
         "event_count", "settled_claim_count", "shown_claim_count", "open_or_unresolved_count",
         "next_inspection_target_count", "tool_note_count", "candidate_count",
+        "harness_run_count", "executed_harness_run_count", "recorded_harness_run_count",
+        "truncated_harness_run_count",
     }
     assert len(d["tool_notes"]) == 1
     assert len(d["candidate_tool_lessons"]) == 1
@@ -1337,3 +1339,36 @@ def test_mcp_harness_no_forbidden_phrases(tmp_path: Path) -> None:
         assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"
     for word in ("healthy", "unhealthy", "pass", "fail", "ready", "success", "failure"):
         assert not re.search(r"\b" + word + r"\b", blob), f"forbidden word: {word!r}"
+
+
+# ── harness candidates (read-only MCP) + work_packet harness parity ──────────
+
+def test_mcp_harness_candidates_listed_read_only() -> None:
+    assert "chimera_harness_run_candidates" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_harness_candidates_returns_projection(tmp_path: Path) -> None:
+    from chimera_memory.harness_run import append_harness_run, build_recorded_run
+    from chimera_memory.storage import MemoryStore
+    store = MemoryStore.from_paths(root=tmp_path)
+    append_harness_run(store, build_recorded_run(
+        command="uv run pytest", generated_at="T", exit_code=7, work_session_id="sess_x",
+        check_label="suite", note="Re-run.", tags=("v0.30",)))
+    d = call_tool("chimera_harness_run_candidates", {"work_session_id": "sess_x"},
+                  perms=_ro(), root=tmp_path)
+    assert d["count"] == 1 and d["candidates"][0]["tool_name"] == "harness"
+
+
+def test_mcp_harness_candidates_no_store_creation(tmp_path: Path) -> None:
+    call_tool("chimera_harness_run_candidates", {}, perms=_ro(), root=tmp_path)
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_work_packet_carries_harness_fields(tmp_path: Path) -> None:
+    from chimera_memory.harness_run import append_harness_run, build_recorded_run
+    from chimera_memory.storage import MemoryStore
+    store = MemoryStore.from_paths(root=tmp_path)
+    append_harness_run(store, build_recorded_run(
+        command="c", generated_at="T", exit_code=0, work_session_id="sess_x"))
+    d = call_tool("chimera_work_packet", {"session_id": "sess_x"}, perms=_ro(), root=tmp_path)
+    assert "harness_runs" in d and "harness_run_count" in d["summary"]

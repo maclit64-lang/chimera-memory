@@ -116,3 +116,12 @@ safety, approval, merge, or production-readiness signal, and not a form of verif
 `suggested_first_read` and the prompt header are inspection summaries — they never instruct that
 anything be done automatically, and there is no automatic agent run or prompt injection. The primer
 does not save tool notes, run tools, spawn agents, launch workflows, score, route, rank, or sync.
+
+## Harness run observations (v0.30)
+
+With `--work-session SESSION_ID`, the primer adds a read-only `harness_runs` array (compact,
+output-free), a `## Harness run observations` markdown section, and a
+`chimera-memory harness list --work-session SESSION_ID --json` entry in `suggested_first_read`.
+The Agent Kickoff Pack (`branch-primer bundle --work-session SESSION_ID`) adds `HARNESS_RUNS.md`
+and `harness-runs.json` (hashed in the manifest; no stdout/stderr previews). An exit code is
+recorded, not interpreted as a verdict. See [harness-lite.md](harness-lite.md).

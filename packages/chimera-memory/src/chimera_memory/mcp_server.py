@@ -758,6 +758,27 @@ _TOOLS = [
         required=["run_id"],
         permission="read",
     ),
+    _tool(
+        name="chimera_harness_run_candidates",
+        description=(
+            "Project advisory candidate lessons from local Harness Lite runs (read-only). "
+            "Conservative, mostly verbatim from each run's note/check_label; nothing is saved "
+            "as a Tool Note. Exact filters only. Never writes, creates a store, executes "
+            "commands, or includes unbounded output. Review before saving."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "work_session_id": {"type": "string", "description": "Exact work-session filter."},
+            "tag": {"type": "string", "description": "Exact tag filter."},
+            "limit": {"type": "integer", "description": "Max candidates (after filters)."},
+        },
+        required=[],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1463,6 +1484,28 @@ def _tool_harness_run_show(args: dict[str, Any], *, root: Path) -> dict[str, Any
     return found.to_dict()
 
 
+def _tool_harness_run_candidates(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: project advisory candidate lessons from harness runs. Never writes/saves."""
+    from chimera_memory.harness_run import (
+        filter_runs,
+        project_harness_candidates,
+        read_harness_runs,
+    )
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    runs = filter_runs(
+        read_harness_runs(store),
+        work_session_id=args.get("work_session_id"),
+        tag=args.get("tag"),
+    )
+    cands = project_harness_candidates(runs)
+    limit = _opt_int(args.get("limit"))
+    listed = cands[:limit] if limit is not None else cands
+    return {"schema_version": 1, "candidates": listed, "count": len(cands)}
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1516,6 +1559,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_harness_run_show": (
         lambda a, *, root, perms: _tool_harness_run_show(a, root=root)
+    ),
+    "chimera_harness_run_candidates": (
+        lambda a, *, root, perms: _tool_harness_run_candidates(a, root=root)
     ),
 }
 

@@ -393,6 +393,65 @@ def render_run_markdown(run: HarnessRun) -> str:
     return "\n".join(lines)
 
 
+HARNESS_CANDIDATE_CAVEAT = (
+    "Advisory candidate projected from a recorded run observation; review before saving as a "
+    "Tool Note. An exit code is recorded, not interpreted as a verdict."
+)
+
+
+def _candidate_id(run_id: str, lesson: str) -> str:
+    return "cand_" + hashlib.sha256(f"{run_id}\x1f{lesson}".encode()).hexdigest()[:16]
+
+
+def _run_suggests_candidate(run: HarnessRun) -> bool:
+    """Conservative trigger: an explicit check_label plus an explicit signal to review."""
+    if not run.check_label:
+        return False
+    return bool(run.note) or run.output_truncated or run.redaction_applied or (
+        run.exit_code is not None and run.exit_code != 0
+    )
+
+
+def project_harness_candidates(runs: list[HarnessRun]) -> list[dict[str, Any]]:
+    """Read-only HarnessRun -> candidate-lesson projection. No save, no ranking, no fuzzy.
+
+    Conservative and mostly verbatim: the lesson is the run's note when present, else a
+    neutral inspection prompt built from the check label. Nothing is saved as a Tool Note.
+    """
+    out: list[dict[str, Any]] = []
+    for run in runs:
+        if not _run_suggests_candidate(run):
+            continue
+        if run.note:
+            lesson = run.note
+        else:
+            lesson = (
+                f"For '{run.check_label}', inspect the bounded command output and artifact "
+                "refs before closing the session."
+            )
+        flags = []
+        if run.output_truncated:
+            flags.append("output truncated")
+        if run.redaction_applied:
+            flags.append("redaction applied")
+        evidence = f"Run {run.run_id} ({run.mode}, {_exit_phrase(run.exit_code)})"
+        if flags:
+            evidence += "; " + ", ".join(flags)
+        out.append({
+            "schema_version": SCHEMA_VERSION,
+            "candidate_id": _candidate_id(run.run_id, lesson),
+            "source_run_ids": [run.run_id],
+            "task_kind": None,
+            "tool_name": "harness",
+            "workflow_name": run.check_label,
+            "lesson": lesson,
+            "evidence": evidence,
+            "caveat": HARNESS_CANDIDATE_CAVEAT,
+            "tags": list(run.tags),
+        })
+    return out
+
+
 __all__ = [
     "DEFAULT_MAX_OUTPUT_BYTES",
     "MODES",

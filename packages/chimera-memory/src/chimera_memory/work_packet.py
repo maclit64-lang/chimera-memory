@@ -67,6 +67,7 @@ class WorkPacketFilters:
     tag: str | None = None
     limit_tool_notes: int | None = None
     limit_candidates: int | None = None
+    limit_harness_runs: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +78,7 @@ class WorkPacketFilters:
             "tag": self.tag,
             "limit_tool_notes": self.limit_tool_notes,
             "limit_candidates": self.limit_candidates,
+            "limit_harness_runs": self.limit_harness_runs,
         }
 
 
@@ -89,6 +91,10 @@ class WorkPacketSummary:
     next_inspection_target_count: int
     tool_note_count: int
     candidate_count: int
+    harness_run_count: int
+    executed_harness_run_count: int
+    recorded_harness_run_count: int
+    truncated_harness_run_count: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +105,10 @@ class WorkPacketSummary:
             "next_inspection_target_count": self.next_inspection_target_count,
             "tool_note_count": self.tool_note_count,
             "candidate_count": self.candidate_count,
+            "harness_run_count": self.harness_run_count,
+            "executed_harness_run_count": self.executed_harness_run_count,
+            "recorded_harness_run_count": self.recorded_harness_run_count,
+            "truncated_harness_run_count": self.truncated_harness_run_count,
         }
 
 
@@ -115,6 +125,7 @@ class WorkPacket:
     next_inspection_targets: tuple[HandoffTarget, ...]
     tool_notes: tuple[ToolNote, ...]
     candidate_tool_lessons: tuple[CandidateLesson, ...]
+    harness_runs: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +140,7 @@ class WorkPacket:
             "next_inspection_targets": [t.to_dict() for t in self.next_inspection_targets],
             "tool_notes": [n.to_dict() for n in self.tool_notes],
             "candidate_tool_lessons": [c.to_dict() for c in self.candidate_tool_lessons],
+            "harness_runs": [dict(r) for r in self.harness_runs],
         }
 
 
@@ -143,12 +155,16 @@ def build_work_packet(
     tag: str | None = None,
     limit_tool_notes: int | None = None,
     limit_candidates: int | None = None,
+    limit_harness_runs: int | None = None,
 ) -> WorkPacket:
     """Compose a WorkPacket from the local ledger. Read-only; writes nothing.
 
     Reuses ``build_handoff`` for the claim/evidence/tool-note view and
     ``select_candidates`` for candidate lessons. Exact-match filters combine
-    with AND; limits apply after filtering; stored order; no ranking.
+    with AND; limits apply after filtering; stored order; no ranking. Harness runs
+    are surfaced (compact, output-free): when ``session_id`` is given they narrow
+    to that work session; otherwise the most-recent runs are shown (default 20).
+    ``--limit-harness-runs`` keeps the most-recent N (stored order).
     """
     handoff = build_handoff(
         store,
@@ -161,6 +177,18 @@ def build_work_packet(
     )
     candidates = select_candidates(store, task_kind=task_kind, tag=tag, limit=limit_candidates)
 
+    from chimera_memory.harness_run import compact_run, filter_runs, read_harness_runs
+
+    if session_id is not None:
+        selected_runs = filter_runs(read_harness_runs(store), work_session_id=session_id, tag=tag)
+        eff_limit = limit_harness_runs
+    else:
+        selected_runs = filter_runs(read_harness_runs(store), tag=tag)
+        eff_limit = limit_harness_runs if limit_harness_runs is not None else 20
+    if eff_limit is not None:
+        selected_runs = selected_runs[-eff_limit:] if eff_limit > 0 else []
+    harness_runs = tuple(compact_run(r) for r in selected_runs)
+
     summary = WorkPacketSummary(
         event_count=handoff.event_count,
         settled_claim_count=handoff.settled_claim_count,
@@ -169,6 +197,10 @@ def build_work_packet(
         next_inspection_target_count=len(handoff.next_inspection_targets),
         tool_note_count=len(handoff.tool_notes),
         candidate_count=len(candidates),
+        harness_run_count=len(harness_runs),
+        executed_harness_run_count=sum(1 for r in harness_runs if r.get("mode") == "executed"),
+        recorded_harness_run_count=sum(1 for r in harness_runs if r.get("mode") == "recorded"),
+        truncated_harness_run_count=sum(1 for r in harness_runs if r.get("output_truncated")),
     )
     return WorkPacket(
         schema_version=SCHEMA_VERSION,
@@ -183,6 +215,7 @@ def build_work_packet(
             tag=tag,
             limit_tool_notes=limit_tool_notes,
             limit_candidates=limit_candidates,
+            limit_harness_runs=limit_harness_runs,
         ),
         summary=summary,
         claims=handoff.claims,
@@ -190,6 +223,7 @@ def build_work_packet(
         next_inspection_targets=handoff.next_inspection_targets,
         tool_notes=handoff.tool_notes,
         candidate_tool_lessons=tuple(candidates),
+        harness_runs=harness_runs,
     )
 
 
@@ -266,6 +300,23 @@ def render_work_packet_markdown(packet: WorkPacket, *, store_label: str) -> str:
                 lines.append(f"  Evidence: {cand.evidence}")
             if cand.caveat:
                 lines.append(f"  Caveat: {cand.caveat}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("## Harness run observations")
+    lines.append(f"- runs: {s.harness_run_count}")
+    lines.append(f"- executed: {s.executed_harness_run_count}")
+    lines.append(f"- recorded: {s.recorded_harness_run_count}")
+    lines.append(f"- output truncated: {s.truncated_harness_run_count}")
+    if packet.harness_runs:
+        for r in packet.harness_runs:
+            ec = r.get("exit_code")
+            ep = (
+                "exit code unknown" if ec is None
+                else ("exit code 0" if ec == 0 else f"nonzero exit code ({ec})")
+            )
+            label = f" — {r['check_label']}" if r.get("check_label") else ""
+            lines.append(f"- [{r.get('mode')}] {r.get('command')} ({ep}){label}")
     else:
         lines.append("- (none)")
     lines.append("")
@@ -477,6 +528,9 @@ def diff_packets(
     old_cands = _ids(old, "candidate_tool_lessons", "candidate_id")
     new_cands = _ids(new, "candidate_tool_lessons", "candidate_id")
 
+    old_runs = _ids(old, "harness_runs", "run_id")
+    new_runs = _ids(new, "harness_runs", "run_id")
+
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact": DIFF_ARTIFACT,
@@ -495,6 +549,10 @@ def diff_packets(
         "candidate_tool_lessons": {
             "added": sorted(new_cands - old_cands),
             "removed": sorted(old_cands - new_cands),
+        },
+        "harness_runs": {
+            "added": sorted(new_runs - old_runs),
+            "removed": sorted(old_runs - new_runs),
         },
     }
 
@@ -542,6 +600,12 @@ def render_diff_markdown(diff: dict[str, Any]) -> str:
     lines.append("Candidate tool lessons:")
     lines.append(f"- added: {', '.join(diff['candidate_tool_lessons']['added']) or '(none)'}")
     lines.append(f"- removed: {', '.join(diff['candidate_tool_lessons']['removed']) or '(none)'}")
+    lines.append("")
+    runs = diff.get("harness_runs", {"added": [], "removed": []})
+    lines.append("Harness run observations:")
+    lines.append(f"- runs delta: {_delta(s.get('harness_run_count', 0))}")
+    lines.append(f"- added: {len(runs['added'])}")
+    lines.append(f"- removed: {len(runs['removed'])}")
     return "\n".join(lines)
 
 

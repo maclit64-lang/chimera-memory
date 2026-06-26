@@ -49,6 +49,7 @@ FINDING_KINDS = frozenset({
     "session_without_harness_runs",
     "harness_run_without_session",
     "harness_run_output_truncated",
+    "harness_run_with_redacted_preview",
 })
 
 _CLOSEOUT_KINDS = frozenset({
@@ -254,6 +255,15 @@ def build_context_doctor(
                     tags=list(r.tags),
                     refs=[r.run_id],
                     suggested_inspection=[f"chimera-memory harness show {r.run_id}"],
+                ))
+        for r in all_runs:
+            if r.redaction_applied:
+                findings.append(_finding(
+                    "harness_run_with_redacted_preview",
+                    "Harness run preview had redaction applied.",
+                    tags=list(r.tags),
+                    refs=[r.run_id],
+                    suggested_inspection=[f"chimera-memory harness show {r.run_id} --markdown"],
                 ))
 
     carryover_count = sum(

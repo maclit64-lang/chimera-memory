@@ -95,6 +95,39 @@ Two read-only MCP tools are available without `--allow-write`:
 They never create or mutate a store and never execute commands. `harness run` and
 `harness record` are **not** exposed over MCP.
 
+## Harness Lite v1 — context + packet integration
+
+Harness Lite v0 records explicit local run observations. **v1** surfaces those observations
+wherever the next agent starts, wherever a reviewer inspects work, and wherever a packet/archive is
+exported — additively, read-only, and without verdict language:
+
+- **Branch Primer** (`branch-primer --work-session SESSION_ID`) gains a `harness_runs` array
+  (compact, output-free), a `## Harness run observations` markdown section, and a
+  `chimera-memory harness list --work-session SESSION_ID --json` entry in `suggested_first_read`.
+- **Agent Kickoff Pack** (`branch-primer bundle --work-session SESSION_ID`) adds `HARNESS_RUNS.md`
+  and `harness-runs.json` to the bundle (hashed in the manifest); no stdout/stderr previews.
+- **Work Packet** gains `harness_runs` plus summary counts (`harness_run_count`,
+  `executed_harness_run_count`, `recorded_harness_run_count`, `truncated_harness_run_count`) and a
+  `## Harness run observations` section. `--session` narrows runs to that work session; otherwise
+  the most-recent runs are shown (default 20). `--limit-harness-runs N` keeps the most-recent N
+  (stored order). Bundles hash the updated `work-packet.json`; `inspect` still validates.
+- **Work Packet diff** reports `harness_runs.added` / `.removed` by `run_id` (append-only, so
+  status never changes), with added/removed counts in the markdown.
+- **Harness candidates** (`harness candidates`) is a read-only `HarnessRun → candidate lesson`
+  projection: conservative and mostly verbatim from each run's `note` / `check_label`, never
+  saved automatically (review before saving a Tool Note). Fields: `candidate_id`,
+  `source_run_ids`, `task_kind`, `tool_name` (`"harness"`), `workflow_name`, `lesson`, `evidence`,
+  `caveat`, `tags`.
+- **Context Doctor** adds `harness_run_with_redacted_preview` alongside
+  `session_without_harness_runs`, `harness_run_without_session`, and
+  `harness_run_output_truncated` (kind only; suggested inspection, never a judgment).
+- **MCP** adds the read-only `chimera_harness_run_candidates` tool; the existing read tools that
+  wrap the Work Packet now carry harness fields. All harness MCP surfaces are read-only and never
+  execute commands; `harness run` / `harness record` remain CLI-only.
+
+Every read surface reads the ledger and writes nothing; an exit code is recorded, not interpreted
+as a verdict.
+
 ## Non-goals
 
 Harness Lite does not run an agent, schedule or background-execute anything, spawn agents, launch

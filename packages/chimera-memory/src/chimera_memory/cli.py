@@ -697,6 +697,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max candidate lessons to include (>=0).",
     )
     work_packet_parser.add_argument(
+        "--limit-harness-runs", dest="limit_harness_runs", type=int,
+        help="Max harness run observations to include (most recent N).",
+    )
+    work_packet_parser.add_argument(
         "--output", dest="output", help="Write the packet to this file (parent must exist)."
     )
     work_packet_parser.add_argument("--memory-dir")
@@ -729,6 +733,10 @@ def _build_parser() -> argparse.ArgumentParser:
     wp_bundle.add_argument(
         "--limit-candidates", dest="limit_candidates", type=int,
         help="Max candidate lessons (>=0).",
+    )
+    wp_bundle.add_argument(
+        "--limit-harness-runs", dest="limit_harness_runs", type=int,
+        help="Max harness run observations (most recent N).",
     )
     wp_bundle.add_argument("--memory-dir")
 
@@ -1225,6 +1233,16 @@ def _build_parser() -> argparse.ArgumentParser:
     h_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     h_show.add_argument("--markdown", action="store_true", help="Emit markdown")
     h_show.add_argument("--memory-dir")
+
+    h_cands = h_sub.add_parser(
+        "candidates",
+        help="Project advisory candidate lessons from runs (read-only; review before saving).",
+    )
+    h_cands.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    h_cands.add_argument("--work-session", dest="work_session_id", help="Exact work-session id.")
+    h_cands.add_argument("--tag", dest="tag", help="Exact tag filter.")
+    h_cands.add_argument("--limit", dest="limit", type=int, help="Max candidates (after filters).")
+    h_cands.add_argument("--memory-dir")
     harness_parser.set_defaults(command="harness")
 
     tool_notes_parser = subparsers.add_parser(
@@ -4658,6 +4676,7 @@ def _work_packet(parsed: argparse.Namespace) -> int:
         tag=getattr(parsed, "tag", None),
         limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
         limit_candidates=getattr(parsed, "limit_candidates", None),
+        limit_harness_runs=getattr(parsed, "limit_harness_runs", None),
     )
     if parsed.json:
         content = json.dumps(packet.to_dict(), sort_keys=True)
@@ -4707,6 +4726,7 @@ def _work_packet_bundle(parsed: argparse.Namespace) -> int:
         tag=getattr(parsed, "tag", None),
         limit_tool_notes=getattr(parsed, "limit_tool_notes", None),
         limit_candidates=getattr(parsed, "limit_candidates", None),
+        limit_harness_runs=getattr(parsed, "limit_harness_runs", None),
     )
     try:
         store_label = str(store.memory_dir.relative_to(Path.cwd()))
@@ -4876,16 +4896,16 @@ def _resolve_brief_dict(
 
 def _resolve_session_context(
     store: MemoryStore, session_id: str | None
-) -> tuple[str | None, str | None, tuple[str, ...], int | None]:
-    """Resolve --session to (brief_id, thread_dir, extra_first_read, exit_code_or_None)."""
+) -> tuple[str | None, str | None, tuple[str, ...], tuple[dict[str, object], ...], int | None]:
+    """Resolve --session to (brief_id, thread_dir, extra_first_read, harness_runs, exit)."""
     if not session_id:
-        return None, None, (), None
+        return None, None, (), (), None
     from chimera_memory.work_session import find_session
 
     sess = find_session(store, session_id)
     if sess is None:
         print(f"error: no work session with id {session_id!r}", file=__import__("sys").stderr)
-        return None, None, (), 2
+        return None, None, (), (), 2
     extra = tuple(f"Attached snapshot: {sid}" for sid in sess.snapshot_ids)
     from chimera_memory.work_session import events_for_session
 
@@ -4894,6 +4914,14 @@ def _resolve_session_context(
         extra = extra + (
             f"Session closeout context recorded "
             f"(chimera-memory work-session closeout {session_id})",
+        )
+    from chimera_memory.harness_run import compact_run, filter_runs, read_harness_runs
+
+    session_runs = filter_runs(read_harness_runs(store), work_session_id=session_id)
+    harness_runs = tuple(compact_run(r) for r in session_runs)
+    if harness_runs:
+        extra = extra + (
+            f"chimera-memory harness list --work-session {session_id} --json",
         )
     # The session's thread is an association that may not be materialized yet; only
     # use it as primer context if the review thread actually exists (soft, unlike an
@@ -4904,7 +4932,7 @@ def _resolve_session_context(
 
         if read_thread_index(Path(thread_dir)) is None:
             thread_dir = None
-    return sess.brief_id, thread_dir, extra, None
+    return sess.brief_id, thread_dir, extra, harness_runs, None
 
 
 def _brief_files_for(work_brief_dict: dict[str, object] | None) -> dict[str, str] | None:
@@ -4952,8 +4980,8 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     thread_dir = getattr(parsed, "thread_dir", None)
-    sess_brief_id, sess_thread_dir, extra_first_read, sess_err = _resolve_session_context(
-        store, getattr(parsed, "work_session_id", None)
+    sess_brief_id, sess_thread_dir, extra_first_read, sess_harness_runs, sess_err = (
+        _resolve_session_context(store, getattr(parsed, "work_session_id", None))
     )
     if sess_err is not None:
         return sess_err
@@ -4979,6 +5007,7 @@ def _branch_primer(parsed: argparse.Namespace) -> int:
             limit_candidates=getattr(parsed, "limit_candidates", None),
             work_brief=work_brief_dict,
             extra_first_read=extra_first_read,
+            harness_runs=sess_harness_runs,
         )
     except ThreadError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
@@ -5024,8 +5053,8 @@ def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
     except ValueError:
         store_label = store.memory_dir.name
     thread_dir = getattr(parsed, "thread_dir", None)
-    sess_brief_id, sess_thread_dir, extra_first_read, sess_err = _resolve_session_context(
-        store, getattr(parsed, "work_session_id", None)
+    sess_brief_id, sess_thread_dir, extra_first_read, sess_harness_runs, sess_err = (
+        _resolve_session_context(store, getattr(parsed, "work_session_id", None))
     )
     if sess_err is not None:
         return sess_err
@@ -5051,6 +5080,7 @@ def _branch_primer_bundle(parsed: argparse.Namespace) -> int:
             limit_candidates=getattr(parsed, "limit_candidates", None),
             work_brief=work_brief_dict,
             extra_first_read=extra_first_read,
+            harness_runs=sess_harness_runs,
         )
         manifest = write_kickoff_pack(
             primer, output_dir=Path(parsed.bundle_output_dir), store_label=store_label,
@@ -5277,7 +5307,31 @@ def _harness(parsed: argparse.Namespace) -> int:
         print(render_run_markdown(found))
         return 0
 
-    print("error: a harness subcommand is required (record/run/list/show)", file=err)
+    if sub == "candidates":
+        from chimera_memory.harness_run import project_harness_candidates
+        runs = filter_runs(
+            read_harness_runs(store),
+            work_session_id=getattr(parsed, "work_session_id", None),
+            tag=getattr(parsed, "tag", None),
+        )
+        cands = project_harness_candidates(runs)
+        limit = getattr(parsed, "limit", None)
+        cand_list = cands[:limit] if limit is not None else cands
+        if getattr(parsed, "json", False):
+            print(json.dumps(
+                {"schema_version": 1, "candidates": cand_list, "count": len(cands)}, sort_keys=True
+            ))
+            return 0
+        if not cand_list:
+            print("No harness candidate lessons. Advisory only; review before saving.")
+            return 0
+        print("Advisory candidate lessons (review before saving as Tool Notes):")
+        for c in cand_list:
+            print(f"- [{c['tool_name']}] {c.get('workflow_name') or '(no label)'}")
+            print(f"  Candidate lesson: {c['lesson']}")
+        return 0
+
+    print("error: a harness subcommand is required (record/run/list/show/candidates)", file=err)
     return 2
 
 

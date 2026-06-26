@@ -212,3 +212,14 @@ mutate the thread. Thread `add` is intentionally CLI-only (it writes a file tree
 A review thread is a local packet timeline and local review thread index — advisory only. It is
 **not** a correctness, safety, approval, merge, or production-readiness signal, and not a form of
 verification. It does not save tool notes, run tools, spawn agents, score, route, rank, or sync.
+
+## Harness run observations (v0.30)
+
+The packet gains a read-only `harness_runs` array (compact, output-free) plus summary counts
+(`harness_run_count`, `executed_harness_run_count`, `recorded_harness_run_count`,
+`truncated_harness_run_count`) and a `## Harness run observations` markdown section. `--session`
+narrows runs to that work session; otherwise the most-recent runs are shown (default 20).
+`--limit-harness-runs N` keeps the most-recent N in stored order. Bundles hash the updated
+`work-packet.json` (inspect still validates); `diff` reports `harness_runs.added` / `.removed` by
+`run_id`. An exit code is recorded, not interpreted as a verdict. See
+[harness-lite.md](harness-lite.md).
