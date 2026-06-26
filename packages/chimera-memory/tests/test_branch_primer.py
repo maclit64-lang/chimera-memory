@@ -674,3 +674,31 @@ def test_branch_primer_work_session_thread_not_materialized(
     d = json.loads(out)
     assert d["work_brief"]["title"] == "T"
     assert d["filters"]["thread_dir"] is None  # not materialized -> soft-dropped
+
+
+def test_branch_primer_work_session_closeout_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A session with closeout events surfaces a 'closeout context recorded' hint.
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    from chimera_memory.work_session import (
+        append_session_event,
+        build_session_event,
+        make_session_id,
+    )
+    store = MemoryStore.from_paths(root=tmp_path)
+    brief = build_work_brief(title="T", objective="O", task_kind="memory-feature")
+    add_work_brief(store, brief)
+    sid = make_session_id(created_at="2026-06-25T10:00:00+00:00", brief_id=brief.brief_id)
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="started", brief_id=brief.brief_id,
+        created_at="2026-06-25T10:00:00+00:00"))
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="carryover_noted", carryover="token missing",
+        created_at="2026-06-25T10:00:01+00:00"))
+    mem = tmp_path / ".chimera-memory"
+    code, out = _run(capsys, "branch-primer", "--json", "--work-session", sid,
+                     "--memory-dir", str(mem))
+    assert code == 0
+    reads = json.loads(out)["suggested_first_read"]
+    assert any("Session closeout context recorded" in x for x in reads)

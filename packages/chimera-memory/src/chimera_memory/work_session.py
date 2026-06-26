@@ -27,8 +27,12 @@ SESSION_ADVISORY = (
     "production-readiness, or speed guarantee"
 )
 
-EVENT_KINDS = frozenset({"started", "artifact_attached", "snapshot_attached", "closed"})
+EVENT_KINDS = frozenset({
+    "started", "artifact_attached", "snapshot_attached", "closed",
+    "check_reported", "done_observed", "carryover_noted", "closeout_created",
+})
 NEUTRAL_STATUSES = frozenset({"open", "blocked", "closed", "unknown"})
+DONE_STATUSES = frozenset({"reported", "not_reported", "not_applicable", "unknown"})
 
 
 def _strs(value: Any) -> tuple[str, ...]:
@@ -53,6 +57,9 @@ class WorkSessionEvent:
     artifact_refs: tuple[str, ...]
     status: str | None
     note: str | None
+    check: str | None
+    done_criterion: str | None
+    carryover: str | None
     tags: tuple[str, ...]
     source: str
 
@@ -70,6 +77,9 @@ class WorkSessionEvent:
             "artifact_refs": list(self.artifact_refs),
             "status": self.status,
             "note": self.note,
+            "check": self.check,
+            "done_criterion": self.done_criterion,
+            "carryover": self.carryover,
             "tags": list(self.tags),
             "source": self.source,
         }
@@ -89,6 +99,9 @@ class WorkSessionEvent:
             artifact_refs=_strs(d.get("artifact_refs")),
             status=_opt(d.get("status")),
             note=_opt(d.get("note")),
+            check=_opt(d.get("check")),
+            done_criterion=_opt(d.get("done_criterion")),
+            carryover=_opt(d.get("carryover")),
             tags=_strs(d.get("tags")),
             source=str(d.get("source", "cli")),
         )
@@ -115,16 +128,28 @@ def build_session_event(
     artifact_refs: tuple[str, ...] = (),
     status: str | None = None,
     note: str | None = None,
+    check: str | None = None,
+    done_criterion: str | None = None,
+    carryover: str | None = None,
     tags: tuple[str, ...] = (),
     source: str = "cli",
     created_at: str | None = None,
 ) -> WorkSessionEvent:
     if event_kind not in EVENT_KINDS:
         raise ValueError(f"unknown event_kind: {event_kind!r}")
-    if status is not None and status not in NEUTRAL_STATUSES:
-        raise ValueError(f"status must be one of {sorted(NEUTRAL_STATUSES)}, got {status!r}")
+    if status is not None:
+        allowed = DONE_STATUSES if event_kind == "done_observed" else NEUTRAL_STATUSES
+        if status not in allowed:
+            raise ValueError(f"status must be one of {sorted(allowed)}, got {status!r}")
     ts = created_at if created_at is not None else datetime.now(UTC).isoformat()
-    detail = snapshot_id or (artifact_refs[0] if artifact_refs else "") or (status or "")
+    detail = (
+        snapshot_id
+        or check
+        or done_criterion
+        or carryover
+        or (artifact_refs[0] if artifact_refs else "")
+        or (status or "")
+    )
     return WorkSessionEvent(
         schema_version=SCHEMA_VERSION,
         event_id=make_event_id(
@@ -140,6 +165,9 @@ def build_session_event(
         artifact_refs=tuple(artifact_refs),
         status=status,
         note=note,
+        check=check,
+        done_criterion=done_criterion,
+        carryover=carryover,
         tags=tuple(tags),
         source=source,
     )

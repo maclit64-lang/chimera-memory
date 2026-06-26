@@ -1018,6 +1018,49 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ws_close.add_argument("--note", dest="note")
     ws_close.add_argument("--memory-dir")
+
+    ws_rcheck = ws_sub.add_parser("report-check", help="Record a check the agent reported running.")
+    ws_rcheck.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_rcheck.add_argument("--check", dest="check", required=True, help="The check (command/label)")
+    ws_rcheck.add_argument("--note", dest="note")
+    ws_rcheck.add_argument("--memory-dir")
+
+    ws_rdone = ws_sub.add_parser("report-done", help="Record a done-criterion observation.")
+    ws_rdone.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_rdone.add_argument("--done", dest="done_criterion", required=True, help="Done criterion.")
+    ws_rdone.add_argument(
+        "--status", dest="status", default="reported",
+        help="Neutral status: reported/not_reported/not_applicable/unknown (default: reported).",
+    )
+    ws_rdone.add_argument("--note", dest="note")
+    ws_rdone.add_argument("--memory-dir")
+
+    ws_carry = ws_sub.add_parser("note-carryover", help="Record carryover for the next agent.")
+    ws_carry.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_carry.add_argument("--carryover", dest="carryover", required=True, help="Carryover note.")
+    ws_carry.add_argument("--tag", action="append", dest="tags", default=[], help="Tag.")
+    ws_carry.add_argument("--note", dest="note")
+    ws_carry.add_argument("--memory-dir")
+
+    ws_closeout = ws_sub.add_parser("closeout", help="Build the session closeout artifact.")
+    ws_closeout.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_closeout.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ws_closeout.add_argument("--markdown", action="store_true", help="Emit the markdown closeout")
+    ws_closeout.add_argument("--output", dest="output", help="Write the closeout to this file.")
+    ws_closeout.add_argument("--memory-dir")
+
+    ws_cobundle = ws_sub.add_parser(
+        "closeout-bundle", help="Write a portable session closeout bundle to a directory."
+    )
+    ws_cobundle.add_argument("session_id", help="Exact session id (sess_...)")
+    ws_cobundle.add_argument(
+        "--output-dir", dest="bundle_output_dir", required=True,
+        help="Directory to write the closeout bundle into (parent must exist).",
+    )
+    ws_cobundle.add_argument(
+        "--force", action="store_true", help="Overwrite bundle files in a non-empty output dir."
+    )
+    ws_cobundle.add_argument("--memory-dir")
     work_session_parser.set_defaults(command="work-session")
 
     tool_notes_parser = subparsers.add_parser(
@@ -4676,6 +4719,14 @@ def _resolve_session_context(
         print(f"error: no work session with id {session_id!r}", file=__import__("sys").stderr)
         return None, None, (), 2
     extra = tuple(f"Attached snapshot: {sid}" for sid in sess.snapshot_ids)
+    from chimera_memory.work_session import events_for_session
+
+    _closeout_kinds = {"check_reported", "done_observed", "carryover_noted", "closeout_created"}
+    if any(e.event_kind in _closeout_kinds for e in events_for_session(store, session_id)):
+        extra = extra + (
+            f"Session closeout context recorded "
+            f"(chimera-memory work-session closeout {session_id})",
+        )
     # The session's thread is an association that may not be materialized yet; only
     # use it as primer context if the review thread actually exists (soft, unlike an
     # explicit --thread-dir which must exist).
@@ -5061,7 +5112,8 @@ def _work_session(parsed: argparse.Namespace) -> int:
             print(render_session_markdown(sess, events_for_session(store, parsed.session_id)))
         return 0
 
-    if sub in ("attach-snapshot", "attach-artifact", "close"):
+    if sub in ("attach-snapshot", "attach-artifact", "close", "report-check",
+               "report-done", "note-carryover"):
         sess = find_session(store, parsed.session_id)
         if sess is None:
             print(f"error: no work session with id {parsed.session_id!r}", file=err)
@@ -5089,6 +5141,35 @@ def _work_session(parsed: argparse.Namespace) -> int:
             ))
             print(f"Attached artifact to {parsed.session_id}")
             return 0
+        if sub == "report-check":
+            append_session_event(store, build_session_event(
+                session_id=parsed.session_id, event_kind="check_reported",
+                check=parsed.check, note=getattr(parsed, "note", None),
+            ))
+            print(f"Reported check for {parsed.session_id}")
+            return 0
+        if sub == "report-done":
+            try:
+                event = build_session_event(
+                    session_id=parsed.session_id, event_kind="done_observed",
+                    done_criterion=parsed.done_criterion,
+                    status=getattr(parsed, "status", "reported"),
+                    note=getattr(parsed, "note", None),
+                )
+            except ValueError as exc:
+                print(f"error: {exc}", file=err)
+                return 2
+            append_session_event(store, event)
+            print(f"Reported done-criterion for {parsed.session_id} (status={event.status})")
+            return 0
+        if sub == "note-carryover":
+            append_session_event(store, build_session_event(
+                session_id=parsed.session_id, event_kind="carryover_noted",
+                carryover=parsed.carryover, tags=tuple(getattr(parsed, "tags", []) or []),
+                note=getattr(parsed, "note", None),
+            ))
+            print(f"Recorded carryover for {parsed.session_id}")
+            return 0
         # close
         try:
             event = build_session_event(
@@ -5102,8 +5183,65 @@ def _work_session(parsed: argparse.Namespace) -> int:
         print(f"Closed {parsed.session_id} (status={event.status})")
         return 0
 
+    if sub in ("closeout", "closeout-bundle"):
+        from datetime import UTC, datetime
+
+        from chimera_memory.session_closeout import (
+            CloseoutError,
+            build_session_closeout,
+            render_session_closeout_markdown,
+            write_closeout_bundle,
+        )
+
+        closeout = build_session_closeout(
+            store, parsed.session_id, generated_at=datetime.now(UTC).isoformat()
+        )
+        if closeout is None:
+            print(f"error: no work session with id {parsed.session_id!r}", file=err)
+            return 2
+        if sub == "closeout":
+            if getattr(parsed, "json", False):
+                content = json.dumps(closeout, sort_keys=True)
+            else:
+                content = render_session_closeout_markdown(closeout)
+            output = getattr(parsed, "output", None)
+            if output:
+                try:
+                    Path(output).write_text(content + "\n", encoding="utf-8")
+                except OSError as exc:
+                    print(f"error: {exc}", file=err)
+                    return 2
+                print(f"Session closeout written to {output}")
+                return 0
+            print(content)
+            return 0
+        # closeout-bundle
+        from chimera_memory.work_brief import render_work_brief_markdown_from_dict
+        session_obj = find_session(store, parsed.session_id)
+        session_md = render_session_markdown(
+            session_obj, events_for_session(store, parsed.session_id)
+        ) if session_obj else ""
+        brief_md = (
+            render_work_brief_markdown_from_dict(closeout["work_brief"])
+            if closeout.get("work_brief")
+            else None
+        )
+        try:
+            manifest = write_closeout_bundle(
+                closeout, output_dir=Path(parsed.bundle_output_dir),
+                session_markdown=session_md, brief_markdown=brief_md,
+                force=getattr(parsed, "force", False),
+            )
+        except CloseoutError as exc:
+            print(f"error: {exc}", file=err)
+            return 2
+        count = len(manifest["files"]) + 1
+        print(f"Session closeout bundle written to {parsed.bundle_output_dir} ({count} files)")
+        return 0
+
     print("error: a work-session subcommand is required "
-          "(start/list/show/attach-snapshot/attach-artifact/close)", file=err)
+          "(start/list/show/attach-snapshot/attach-artifact/close/report-check/"
+          "report-done/note-carryover/closeout/closeout-bundle)", file=err)
     return 2
 
 

@@ -1105,3 +1105,65 @@ def test_mcp_work_session_no_forbidden_phrases(tmp_path: Path) -> None:
     low = blob.lower()
     for phrase in _TN_FORBIDDEN:
         assert phrase not in low, f"overclaim phrase leaked: {phrase!r}"
+
+
+# ── session closeout (read-only MCP tool) ────────────────────────────────────
+
+def _seed_closeout_session(tmp_path: Path) -> str:
+    from chimera_memory.storage import MemoryStore
+    from chimera_memory.work_brief import add_work_brief, build_work_brief
+    from chimera_memory.work_session import (
+        append_session_event,
+        build_session_event,
+        make_session_id,
+    )
+    store = MemoryStore.from_paths(root=tmp_path)
+    brief = build_work_brief(title="B", objective="O", task_kind="memory-feature")
+    add_work_brief(store, brief)
+    sid = make_session_id(created_at="2026-06-25T10:00:00+00:00", brief_id=brief.brief_id)
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="started", brief_id=brief.brief_id,
+        created_at="2026-06-25T10:00:00+00:00"))
+    append_session_event(store, build_session_event(
+        session_id=sid, event_kind="check_reported", check="pytest",
+        created_at="2026-06-25T10:00:01+00:00"))
+    return sid
+
+
+def test_mcp_session_closeout_listed_read_only() -> None:
+    assert "chimera_work_session_closeout" in {t["name"] for t in list_tools(_ro())}
+
+
+def test_mcp_session_closeout_write_commands_not_exposed() -> None:
+    names = {t["name"] for t in list_tools(_rw())}
+    for n in ("chimera_work_session_report_check", "chimera_work_session_report_done",
+              "chimera_work_session_note_carryover", "chimera_work_session_closeout_bundle"):
+        assert n not in names
+
+
+def test_mcp_session_closeout_returns_closeout(tmp_path: Path) -> None:
+    sid = _seed_closeout_session(tmp_path)
+    d = call_tool("chimera_work_session_closeout", {"session_id": sid}, perms=_ro(), root=tmp_path)
+    assert d["artifact"] == "chimera_agent_session_closeout"
+    assert d["session"]["session_id"] == sid
+    assert len(d["reported_checks"]) == 1
+
+
+def test_mcp_session_closeout_missing_returns_error(tmp_path: Path) -> None:
+    r = call_tool("chimera_work_session_closeout", {"session_id": "sess_nope"},
+                  perms=_ro(), root=tmp_path)
+    assert "error" in r
+
+
+def test_mcp_session_closeout_no_store_creation(tmp_path: Path) -> None:
+    call_tool("chimera_work_session_closeout", {"session_id": "x"}, perms=_ro(), root=tmp_path)
+    assert not (tmp_path / ".chimera-memory").exists()
+
+
+def test_mcp_session_closeout_no_forbidden_phrases(tmp_path: Path) -> None:
+    sid = _seed_closeout_session(tmp_path)
+    t = next(x for x in list_tools(_ro()) if x["name"] == "chimera_work_session_closeout")
+    d = call_tool("chimera_work_session_closeout", {"session_id": sid}, perms=_ro(), root=tmp_path)
+    blob = (t["description"] + json.dumps(d)).lower()
+    for phrase in _TN_FORBIDDEN:
+        assert phrase not in blob, f"overclaim phrase leaked: {phrase!r}"

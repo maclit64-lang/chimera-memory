@@ -68,6 +68,47 @@ already means the claim-session filter.)
 (exact `session_id` → `{schema_version, session, events}`) are read-only tools, available without
 `--allow-write`; they never write or create a store. Session start/attach/close stay CLI-only.
 
+## Session closeout
+
+After a task ends, a **closeout** summarizes what happened in the session. First record what the
+agent *reported* (all advisory, neutral):
+
+```bash
+chimera-memory work-session report-check SESSION_ID --check "uv run pytest …" --note "Reported by agent."
+chimera-memory work-session report-done SESSION_ID --done "Full tests pass." --status reported --note "…"
+chimera-memory work-session note-carryover SESSION_ID --carryover "PyPI publish still blocked." --tag release-blocker
+```
+
+These append `check_reported` / `done_observed` / `carryover_noted` events. `report-done`'s
+`--status` is a neutral observation (`reported` / `not_reported` / `not_applicable` / `unknown`,
+default `reported`) — there is no pass/fail. Then build the closeout artifact:
+
+```bash
+chimera-memory work-session closeout SESSION_ID            # markdown (default)
+chimera-memory work-session closeout SESSION_ID --json
+chimera-memory work-session closeout SESSION_ID --output SESSION_CLOSEOUT.md
+chimera-memory work-session closeout-bundle SESSION_ID --output-dir DIR [--force]
+```
+
+The closeout JSON (`artifact: "chimera_agent_session_closeout"`) carries the session projection,
+the original `work_brief`, a `snapshot_delta`, `reported_checks`, `done_observations`, `carryover`,
+`attached_artifacts`, and `suggested_review_targets`. **Snapshot delta** is a *local packet
+comparison*: with two or more attached snapshots it diffs the first attached snapshot against the
+latest (`mode: "first-vs-latest"`); with one it reports the single snapshot id; with none it is
+`null`. **Reported checks** are checks the agent *said* it ran — they are not executed here.
+**Done observations** are the agent's neutral notes about done-criteria — not a pass/fail judgment.
+
+`closeout`/`closeout-bundle` read the ledger and write nothing to `.chimera-memory`; `--output`
+and the bundle write only the files/directory you name. The bundle contains `SESSION_CLOSEOUT.md`,
+`session-closeout.json`, `SESSION.md`, `session.json`, `WORK_BRIEF.md`, `work-brief.json`,
+`manifest.json`, `README.md`, plus `snapshot-diff.json` (when a first-vs-latest delta exists) and
+`kickoff-pack-ref.txt` (when a kickoff pack is associated); it refuses a non-empty output directory
+without `--force`. `branch-primer --work-session` adds a compact "session closeout context
+recorded" hint to its suggested first reads when closeout events exist (the primer does not depend
+on closeout). The read-only MCP tool `chimera_work_session_closeout` returns the same closeout JSON
+(available without `--allow-write`; never writes or creates a store); the reporting/bundle commands
+stay CLI-only.
+
 ## Non-goals
 
 A Work Session is advisory and local. It is **not** a correctness, safety, approval, merge, or

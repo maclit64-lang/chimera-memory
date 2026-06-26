@@ -644,6 +644,27 @@ _TOOLS = [
         required=["session_id"],
         permission="read",
     ),
+    _tool(
+        name="chimera_work_session_closeout",
+        description=(
+            "Build a local Agent Session Closeout for one session: state, brief, attached "
+            "snapshot delta (local packet comparison), reported checks, done observations, "
+            "carryover, and suggested review targets. Read-only: never writes or creates a "
+            "store; returns an error for an unknown session. Advisory — local session "
+            "closeout context; not a correctness, safety, approval, merge, "
+            "production-readiness, or speed guarantee."
+        ),
+        properties={
+            "root": {
+                "type": "string",
+                "description": "Repo root whose store to read (default: server root).",
+                "default": ".",
+            },
+            "session_id": {"type": "string", "description": "Exact session id (sess_...)."},
+        },
+        required=["session_id"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1253,6 +1274,24 @@ def _tool_work_session_show(args: dict[str, Any], *, root: Path) -> dict[str, An
     }
 
 
+def _tool_work_session_closeout(args: dict[str, Any], *, root: Path) -> dict[str, Any]:
+    """Read-only: build a session closeout for one session. Never writes."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.session_closeout import build_session_closeout
+    from chimera_memory.storage import MemoryStore
+
+    arg_root = args.get("root")
+    store = MemoryStore.from_paths(root=Path(arg_root) if arg_root else root)
+    session_id = args.get("session_id") or ""
+    closeout = build_session_closeout(
+        store, session_id, generated_at=datetime.now(UTC).isoformat()
+    )
+    if closeout is None:
+        return {"error": f"no work session with id {session_id!r}"}
+    return closeout
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1291,6 +1330,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_work_session_show": (
         lambda a, *, root, perms: _tool_work_session_show(a, root=root)
+    ),
+    "chimera_work_session_closeout": (
+        lambda a, *, root, perms: _tool_work_session_closeout(a, root=root)
     ),
 }
 
