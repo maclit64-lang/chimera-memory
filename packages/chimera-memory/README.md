@@ -115,7 +115,7 @@ Chimera Memory is in public alpha for developers using AI coding agents.
 It is a local-first CLI that records what an AI coding agent claimed before editing, runs your real checks, settles the result, and generates `PR_EVIDENCE.md` for review.
 
 ```bash
-pip install chimera-memory==0.32.0
+pip install chimera-memory==0.33.0
 chimera-memory demo
 ```
 
