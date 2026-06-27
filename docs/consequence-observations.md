@@ -107,7 +107,10 @@ Evidence Bundle makes those observations portable. Consequence observations add 
 neutral layer on top: a deterministic, append-only ledger of inspection targets
 derived from that evidence. A future Engine/Harness/Forge loop can read these
 neutral targets as input without this layer making any decision — the ledger
-proposes what to inspect; it never decides what to do.
+proposes what to inspect; it never decides what to do. The read-only
+[Memory Evidence Bridge](memory-bridge.md) normalizes exported artifacts (which
+carry these observations) into a neutral `memory_bridge_evidence.v1` record for
+that future loop.
 
 Advisory only — a local inspection-target ledger; not a correctness, safety,
 approval, merge, or production-readiness signal, and not a gate.

@@ -1372,6 +1372,39 @@ def _build_parser() -> argparse.ArgumentParser:
     c_show.add_argument("--memory-dir")
     consequence_parser.set_defaults(command="consequence")
 
+    bridge_parser = subparsers.add_parser(
+        "bridge",
+        help=(
+            "Read-only evidence bridge: normalize exported Memory artifacts (Harness Evidence "
+            "Bundle / Work Packet bundle) into neutral memory_bridge_evidence.v1. Not a gate."
+        ),
+    )
+    br_sub = bridge_parser.add_subparsers(dest="bridge_command")
+
+    br_inspect = br_sub.add_parser(
+        "inspect",
+        help="Inspect a bundle directory and report neutral counts (read-only).",
+    )
+    br_inspect.add_argument(
+        "--bundle-dir", dest="bundle_dir", required=True,
+        help="Harness Evidence Bundle or Work Packet bundle directory.",
+    )
+    br_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    br_normalize = br_sub.add_parser(
+        "normalize",
+        help="Normalize a bundle directory into memory_bridge_evidence.v1 (read-only on source).",
+    )
+    br_normalize.add_argument(
+        "--bundle-dir", dest="bundle_dir", required=True,
+        help="Harness Evidence Bundle or Work Packet bundle directory.",
+    )
+    br_normalize.add_argument(
+        "--output-json", dest="output_json", required=True,
+        help="Explicit path to write the normalized evidence JSON (only file written).",
+    )
+    bridge_parser.set_defaults(command="bridge")
+
     tool_notes_parser = subparsers.add_parser(
         "tool-notes",
         help="Record/list manual, local, advisory tool & workflow lessons (agent skill memory).",
@@ -2302,6 +2335,8 @@ def main(argv: list[str] | None = None) -> int:
         return _harness(parsed)
     if parsed.command == "consequence":
         return _consequence(parsed)
+    if parsed.command == "bridge":
+        return _bridge(parsed)
     if parsed.command == "tool-notes":
         return _tool_notes(parsed)
     if parsed.command == "tool-activity":
@@ -5637,6 +5672,55 @@ def _consequence(parsed: argparse.Namespace) -> int:
 
     print("error: a consequence subcommand is required (scan/list/show)", file=err)
     return 2
+
+
+def _bridge(parsed: argparse.Namespace) -> int:
+    """Read-only evidence bridge: inspect / normalize exported Memory artifacts.
+
+    ``inspect`` reads a bundle directory and prints neutral counts. ``normalize``
+    writes the full ``memory_bridge_evidence.v1`` record to the explicit output path
+    only. Neither mutates the source bundle or the memory store, and neither
+    executes commands or triggers scans.
+    """
+    from datetime import UTC, datetime
+
+    from chimera_memory.bridge import BridgeError, normalize_bundle, render_inspect_text
+
+    sub = getattr(parsed, "bridge_command", None)
+    err = __import__("sys").stderr
+    if sub not in ("inspect", "normalize"):
+        print("error: a bridge subcommand is required (inspect/normalize)", file=err)
+        return 2
+
+    bundle_dir = Path(parsed.bundle_dir)
+    try:
+        evidence = normalize_bundle(bundle_dir, created_at=datetime.now(UTC).isoformat())
+    except BridgeError as exc:
+        print(f"error: {exc}", file=err)
+        return 2
+
+    if sub == "inspect":
+        result = evidence.inspect_dict()
+        if getattr(parsed, "json", False):
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(render_inspect_text(result))
+        return 0
+
+    # normalize: write the full record to the explicit output path only.
+    output = Path(parsed.output_json)
+    try:
+        output.write_text(json.dumps(evidence.to_dict(), sort_keys=True, indent=2) + "\n",
+                          encoding="utf-8")
+    except OSError as exc:
+        print(f"error: {exc}", file=err)
+        return 2
+    print(
+        f"Normalized evidence written to {output} "
+        f"(source_kind={evidence.source_kind}, harness_runs={len(evidence.harness_runs)}, "
+        f"consequence_observations={len(evidence.consequence_observations)})"
+    )
+    return 0
 
 
 def _context_doctor(parsed: argparse.Namespace) -> int:

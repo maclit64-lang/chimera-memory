@@ -132,6 +132,10 @@ JSON + markdown with a hash manifest, so any language can read it. It carries
 local observations only; it confers no scoring, routing, training, or execution
 authority, and consuming it does not make it any of those things.
 
+The read-only [Memory Evidence Bridge](memory-bridge.md) normalizes this bundle (and Work Packet
+bundles that reference one) into a neutral `memory_bridge_evidence.v1` record for a future
+Engine/Harness branch.
+
 ## Boundaries
 
 - Read-only on the memory store: reads the ledger, writes nothing to it.

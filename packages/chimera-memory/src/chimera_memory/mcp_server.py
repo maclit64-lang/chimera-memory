@@ -862,6 +862,44 @@ _TOOLS = [
         required=["observation_id"],
         permission="read",
     ),
+    _tool(
+        name="chimera_memory_bridge_inspect",
+        description=(
+            "Inspect an exported Memory artifact directory (Harness Evidence Bundle or Work "
+            "Packet bundle) and return neutral normalized counts (read-only): source_kind, "
+            "manifest check counts (file_count, hash_mismatch_count, missing_file_count, "
+            "unexpected_store_file_count, parse_error_count, recognized_record_count), "
+            "harness_run_count, consequence_observation_count, suggested_check_count, "
+            "artifact_ref_count, and any work-packet reference. Never writes, creates a store, "
+            "executes commands, or scans."
+        ),
+        properties={
+            "bundle_dir": {
+                "type": "string",
+                "description": "Path to the bundle directory (Harness Evidence or Work Packet).",
+            },
+        },
+        required=["bundle_dir"],
+        permission="read",
+    ),
+    _tool(
+        name="chimera_memory_bridge_normalize_preview",
+        description=(
+            "Preview the normalized memory_bridge_evidence.v1 record for a bundle directory "
+            "(read-only): the full normalized evidence, including harness_runs and "
+            "consequence_observations, returned inline. This is a preview only — it writes no "
+            "file. The normalize writer is intentionally not exposed through MCP. Never writes, "
+            "creates a store, executes commands, or scans."
+        ),
+        properties={
+            "bundle_dir": {
+                "type": "string",
+                "description": "Path to the bundle directory (Harness Evidence or Work Packet).",
+            },
+        },
+        required=["bundle_dir"],
+        permission="read",
+    ),
 ]
 
 _PERM_RANK = {"read": 0, "write": 1, "execute": 2}
@@ -1653,6 +1691,38 @@ def _tool_consequence_observation_show(args: dict[str, Any], *, root: Path) -> d
     return found.to_dict()
 
 
+def _tool_memory_bridge_inspect(args: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: inspect an exported Memory artifact dir; return neutral counts. No writes/exec."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.bridge import BridgeError, normalize_bundle
+
+    bundle_dir = args.get("bundle_dir")
+    if not bundle_dir:
+        return {"error": "bundle_dir is required"}
+    try:
+        evidence = normalize_bundle(Path(bundle_dir), created_at=datetime.now(UTC).isoformat())
+    except (BridgeError, OSError, json.JSONDecodeError) as exc:
+        return {"error": f"unreadable bundle: {exc}"}
+    return evidence.inspect_dict()
+
+
+def _tool_memory_bridge_normalize_preview(args: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: preview the normalized memory_bridge_evidence.v1 inline. Writes no file."""
+    from datetime import UTC, datetime
+
+    from chimera_memory.bridge import BridgeError, normalize_bundle
+
+    bundle_dir = args.get("bundle_dir")
+    if not bundle_dir:
+        return {"error": "bundle_dir is required"}
+    try:
+        evidence = normalize_bundle(Path(bundle_dir), created_at=datetime.now(UTC).isoformat())
+    except (BridgeError, OSError, json.JSONDecodeError) as exc:
+        return {"error": f"unreadable bundle: {exc}"}
+    return evidence.to_dict()
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "chimera_claim_validate": lambda a, *, root, perms: _tool_validate(a, root=root),
     "chimera_claim_lock_auto": lambda a, *, root, perms: _tool_lock_auto(a, root=root, perms=perms),
@@ -1721,6 +1791,12 @@ _TOOL_DISPATCH: dict[str, Any] = {
     ),
     "chimera_consequence_observation_show": (
         lambda a, *, root, perms: _tool_consequence_observation_show(a, root=root)
+    ),
+    "chimera_memory_bridge_inspect": (
+        lambda a, *, root, perms: _tool_memory_bridge_inspect(a)
+    ),
+    "chimera_memory_bridge_normalize_preview": (
+        lambda a, *, root, perms: _tool_memory_bridge_normalize_preview(a)
     ),
 }
 
